@@ -76,17 +76,19 @@ function renderAdvances() {
 
 function renderAdvanceForm() {
   const card = el("div", "bg-white rounded-xl border border-slate-200 p-4 space-y-3");
-  const activeDrivers = driversCache.filter((d) => d.active !== false);
+  const nskNames = driversCache.filter((d) => d.active !== false).map((d) => d.fullName);
+  const dosatuyNames = (typeof computeDosatuyTotals === "function") ? Object.keys(computeDosatuyTotals()) : [];
+  const allNames = Array.from(new Set([...nskNames, ...dosatuyNames])).sort((a, b) => a.localeCompare(b));
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">Выдать аванс</div>
     <label class="block text-xs text-slate-500">Дата
       <input id="av-date" type="date" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${todayISO()}" />
     </label>
-    <label class="block text-xs text-slate-500">Водитель
-      <select id="av-driver" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
-        <option value="">Выбери водителя</option>
-        ${activeDrivers.map((d) => `<option value="${d.id}">${escapeHtml(d.fullName)}</option>`).join("")}
-      </select>
+    <label class="block text-xs text-slate-500">Водитель (Новосибирск или Досатуй)
+      <input id="av-driver" list="av-driver-list" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Начни вводить ФИО" />
+      <datalist id="av-driver-list">
+        ${allNames.map((n) => `<option value="${escapeHtml(n)}">`).join("")}
+      </datalist>
     </label>
     <label class="block text-xs text-slate-500">Сумма, ₽
       <input id="av-amount" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" />
@@ -130,21 +132,24 @@ function renderAdvanceForm() {
 
   card.querySelector("#av-save").onclick = async () => {
     const date = card.querySelector("#av-date").value;
-    const driverId = card.querySelector("#av-driver").value;
+    const driverName = card.querySelector("#av-driver").value.trim();
     const amount = Number(card.querySelector("#av-amount").value);
     const errBox = card.querySelector("#av-error");
     const saveBtn = card.querySelector("#av-save");
-    if (!date || !driverId || !amount) {
+    if (!date || !driverName || !amount) {
       errBox.textContent = "Заполни дату, водителя и сумму.";
       errBox.classList.remove("hidden");
       return;
     }
-    const driver = driversCache.find((d) => d.id === driverId);
+    // если это водитель из карточек Новосибирска — сохраним и ссылку на неё,
+    // но привязка к самой карточке необязательна (например, для водителей Досатуй)
+    const matchedDriver = driversCache.find((d) => d.fullName.toLowerCase() === driverName.toLowerCase());
     errBox.classList.add("hidden");
     saveBtn.disabled = true;
 
     const payload = {
-      date, driverId, driverName: driver.fullName, amount,
+      date, driverId: matchedDriver ? matchedDriver.id : null, driverName,
+      amount,
       note: card.querySelector("#av-note").value.trim(),
       createdByUid: currentUser.uid, createdByName: currentProfileName,
     };

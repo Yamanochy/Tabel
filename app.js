@@ -131,20 +131,35 @@ function monthSwitcher() {
   return wrap;
 }
 
-// начислено/аванс/остаток по каждому водителю за выбранный месяц
-function computeDriverTotals() {
-  const totals = {}; // driverId -> { name, earned, advanced }
+// начислено/аванс/остаток по каждому человеку за выбранный месяц —
+// считаем по ФИО, объединяя заработок из смен в Новосибирске И из
+// Досатуй, чтобы аванс, выданный водителю Досатуй, вычитался из его
+// общего заработка, а не висел отдельной "минусовой" строкой
+function computeCombinedTotals() {
+  const combined = {}; // name -> { nsk, dosatuy, advanced }
+  const ensure = (name) => {
+    if (!combined[name]) combined[name] = { nsk: 0, dosatuy: 0, advanced: 0 };
+    return combined[name];
+  };
+
   (typeof shiftsCache !== "undefined" ? shiftsCache : []).forEach((s) => {
     if (!inSelectedMonth(s.date, selectedYear, selectedMonth)) return;
-    if (!totals[s.driverId]) totals[s.driverId] = { name: s.driverName, earned: 0, advanced: 0 };
-    totals[s.driverId].earned += Number(s.computedPay || 0);
+    ensure(s.driverName).nsk += Number(s.computedPay || 0);
   });
+
+  if (typeof computeDosatuyTotals === "function") {
+    const dosatuyTotals = computeDosatuyTotals();
+    Object.keys(dosatuyTotals).forEach((name) => {
+      ensure(name).dosatuy = dosatuyTotals[name].total;
+    });
+  }
+
   (typeof advancesCache !== "undefined" ? advancesCache : []).forEach((a) => {
     if (!inSelectedMonth(a.date, selectedYear, selectedMonth)) return;
-    if (!totals[a.driverId]) totals[a.driverId] = { name: a.driverName, earned: 0, advanced: 0 };
-    totals[a.driverId].advanced += Number(a.amount || 0);
+    ensure(a.driverName).advanced += Number(a.amount || 0);
   });
-  return totals;
+
+  return combined;
 }
 
 function renderSummary() {
@@ -152,35 +167,36 @@ function renderSummary() {
   const wrap = el("div", "space-y-3");
   wrap.appendChild(monthSwitcher());
 
-  const totals = computeDriverTotals();
-  const ids = Object.keys(totals);
-  const grandEarned = ids.reduce((s, id) => s + totals[id].earned, 0);
-  const grandAdvanced = ids.reduce((s, id) => s + totals[id].advanced, 0);
-
-  const dosatuyTotals = (typeof computeDosatuyTotals === "function") ? computeDosatuyTotals() : {};
-  const dosatuyNames = Object.keys(dosatuyTotals);
-  const dosatuyTotal = dosatuyNames.reduce((s, n) => s + dosatuyTotals[n].total, 0);
+  const combined = computeCombinedTotals();
+  const names = Object.keys(combined);
+  const grandNsk = names.reduce((s, n) => s + combined[n].nsk, 0);
+  const grandDosatuy = names.reduce((s, n) => s + combined[n].dosatuy, 0);
 
   const grid = el("div", "grid grid-cols-2 gap-3");
-  grid.appendChild(statCard("Начислено · Новосибирск", fmtMoney(grandEarned)));
-  grid.appendChild(statCard("Начислено · Досатуй", fmtMoney(dosatuyTotal)));
+  grid.appendChild(statCard("Начислено · Новосибирск", fmtMoney(grandNsk)));
+  grid.appendChild(statCard("Начислено · Досатуй", fmtMoney(grandDosatuy)));
   wrap.appendChild(grid);
-  wrap.appendChild(statCard("Всего по обеим бригадам", fmtMoney(grandEarned + dosatuyTotal)));
+  wrap.appendChild(statCard("Всего по обеим бригадам", fmtMoney(grandNsk + grandDosatuy)));
 
-  wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-1", "Новосибирск"));
+  wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-1", "К выплате — по каждому человеку"));
   const card = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
-  if (!ids.length) {
-    card.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "За этот месяц пока нет ни одной смены."));
+  if (!names.length) {
+    card.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "За этот месяц пока нет ни начислений, ни авансов."));
   } else {
     const body = el("div", "divide-y divide-slate-100");
-    ids.sort((a, b) => totals[a].name.localeCompare(totals[b].name)).forEach((id) => {
-      const t = totals[id];
-      const remain = t.earned - t.advanced;
+    names.sort((a, b) => a.localeCompare(b)).forEach((name) => {
+      const t = combined[name];
+      const earned = t.nsk + t.dosatuy;
+      const remain = earned - t.advanced;
       const row = el("div", "p-4");
+      const breakdown = (t.nsk && t.dosatuy)
+        ? `<div class="text-[11px] text-slate-400">Новосибирск ${fmtMoney(t.nsk)} + Досатуй ${fmtMoney(t.dosatuy)}</div>`
+        : "";
       row.innerHTML = `
-        <div class="font-semibold text-slate-800 mb-2">${escapeHtml(t.name)}</div>
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div><div class="text-[10px] text-slate-400">Начислено</div><div class="font-num font-bold text-diesel text-sm">${fmtMoney(t.earned)}</div></div>
+        <div class="font-semibold text-slate-800">${escapeHtml(name)}</div>
+        ${breakdown}
+        <div class="grid grid-cols-3 gap-2 text-center mt-2">
+          <div><div class="text-[10px] text-slate-400">Начислено</div><div class="font-num font-bold text-diesel text-sm">${fmtMoney(earned)}</div></div>
           <div><div class="text-[10px] text-slate-400">Аванс</div><div class="font-num font-bold text-route-600 text-sm">${fmtMoney(t.advanced)}</div></div>
           <div><div class="text-[10px] text-slate-400">Остаток</div><div class="font-num font-bold ${remain < 0 ? "text-brick" : "text-shift"} text-sm">${fmtMoney(remain)}</div></div>
         </div>`;
@@ -190,7 +206,9 @@ function renderSummary() {
   }
   wrap.appendChild(card);
 
-  wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-2", "Досатуй (справочно)"));
+  wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-2", "Досатуй — рейсы и ремонт (справочно)"));
+  const dosatuyTotals = (typeof computeDosatuyTotals === "function") ? computeDosatuyTotals() : {};
+  const dosatuyNames = Object.keys(dosatuyTotals);
   const dCard = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
   if (!dosatuyNames.length) {
     dCard.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "За этот месяц данных ещё нет."));
