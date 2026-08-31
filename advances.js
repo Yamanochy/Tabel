@@ -85,10 +85,10 @@ function renderAdvanceForm() {
       <input id="av-date" type="date" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${todayISO()}" />
     </label>
     <label class="block text-xs text-slate-500">Водитель (Новосибирск или Досатуй)
-      <input id="av-driver" list="av-driver-list" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Начни вводить ФИО" />
-      <datalist id="av-driver-list">
-        ${allNames.map((n) => `<option value="${escapeHtml(n)}">`).join("")}
-      </datalist>
+      <div class="relative">
+        <input id="av-driver" autocomplete="off" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Начни вводить ФИО" />
+        <div id="av-driver-suggest" class="hidden absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"></div>
+      </div>
     </label>
     <label class="block text-xs text-slate-500">Сумма, ₽
       <input id="av-amount" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" />
@@ -109,6 +109,26 @@ function renderAdvanceForm() {
       <button id="av-save" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Сохранить</button>
       <button id="av-cancel" class="px-4 py-2.5 rounded-lg bg-slate-100 text-slate-600 font-semibold text-sm">Отмена</button>
     </div>`;
+
+  // свой список подсказок вместо <datalist> — на многих мобильных
+  // браузерах нативная подсказка просто не показывается
+  const driverInput = card.querySelector("#av-driver");
+  const suggestBox = card.querySelector("#av-driver-suggest");
+  function showSuggestions() {
+    const q = driverInput.value.trim().toLowerCase();
+    const matches = allNames.filter((n) => !q || n.toLowerCase().includes(q));
+    if (!matches.length) { suggestBox.classList.add("hidden"); return; }
+    suggestBox.innerHTML = matches.slice(0, 20).map((n) =>
+      `<div class="av-suggest-item px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer" data-name="${escapeHtml(n)}">${escapeHtml(n)}</div>`
+    ).join("");
+    suggestBox.classList.remove("hidden");
+    suggestBox.querySelectorAll(".av-suggest-item").forEach((el) => {
+      el.onclick = () => { driverInput.value = el.dataset.name; suggestBox.classList.add("hidden"); };
+    });
+  }
+  driverInput.addEventListener("focus", showSuggestions);
+  driverInput.addEventListener("input", showSuggestions);
+  driverInput.addEventListener("blur", () => setTimeout(() => suggestBox.classList.add("hidden"), 150));
 
   function renderThumbs() {
     const box = card.querySelector("#av-thumbs");
