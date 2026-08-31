@@ -205,30 +205,6 @@ function renderSummary() {
     card.appendChild(body);
   }
   wrap.appendChild(card);
-
-  wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-2", "Досатуй — рейсы и ремонт (справочно)"));
-  const dosatuyTotals = (typeof computeDosatuyTotals === "function") ? computeDosatuyTotals() : {};
-  const dosatuyNames = Object.keys(dosatuyTotals);
-  const dCard = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
-  if (!dosatuyNames.length) {
-    dCard.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "За этот месяц данных ещё нет."));
-  } else {
-    const dBody = el("div", "divide-y divide-slate-100");
-    dosatuyNames.sort((a, b) => a.localeCompare(b)).forEach((name) => {
-      const d = dosatuyTotals[name];
-      const row = el("div", "p-4 flex items-center justify-between");
-      row.innerHTML = `
-        <div>
-          <div class="font-semibold text-slate-800">${escapeHtml(name)}</div>
-          <div class="text-xs text-slate-400">${d.shifts} рейс${d.shifts === 1 ? "" : d.shifts < 5 ? "а" : "ов"}${d.maint ? " · ТО/ремонт " + fmtMoney(d.maint) : ""}</div>
-        </div>
-        <div class="font-bold font-num text-diesel">${fmtMoney(d.total)}</div>`;
-      dBody.appendChild(row);
-    });
-    dCard.appendChild(dBody);
-  }
-  wrap.appendChild(dCard);
-
   app.appendChild(wrap);
 }
 
