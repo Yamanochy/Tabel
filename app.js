@@ -48,6 +48,19 @@ function inSelectedMonth(dateStr, year, month) {
   return d.getFullYear() === year && d.getMonth() === month;
 }
 
+// ---------- сопоставление одного и того же человека при разном написании ФИО ----------
+// например, "Мусаев Абдула" и "Мусаев Абдула Могомедович" (отчество добавили
+// позже) — старые записи в Досатуй "заморожены" со старым именем, поэтому
+// сравниваем по фамилии+имени, а показываем самый полный вариант написания
+function nameKey(name) {
+  return String(name || "").trim().toLowerCase().split(/\s+/).slice(0, 2).join(" ");
+}
+function bestName(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return b.length > a.length ? b : a;
+}
+
 function startApp() {
   renderUserBar();
   buildNav();
@@ -136,10 +149,12 @@ function monthSwitcher() {
 // Досатуй, чтобы аванс, выданный водителю Досатуй, вычитался из его
 // общего заработка, а не висел отдельной "минусовой" строкой
 function computeCombinedTotals() {
-  const combined = {}; // name -> { nsk, dosatuy, advanced }
+  const perKey = {}; // ключ (фамилия+имя) -> { displayName, nsk, dosatuy, advanced }
   const ensure = (name) => {
-    if (!combined[name]) combined[name] = { nsk: 0, dosatuy: 0, advanced: 0 };
-    return combined[name];
+    const key = nameKey(name);
+    if (!perKey[key]) perKey[key] = { displayName: name, nsk: 0, dosatuy: 0, advanced: 0 };
+    perKey[key].displayName = bestName(perKey[key].displayName, name);
+    return perKey[key];
   };
 
   (typeof shiftsCache !== "undefined" ? shiftsCache : []).forEach((s) => {
@@ -159,7 +174,10 @@ function computeCombinedTotals() {
     ensure(a.driverName).advanced += Number(a.amount || 0);
   });
 
-  return combined;
+  // отдаём наружу по отображаемому имени — остальной код как был
+  const out = {};
+  Object.values(perKey).forEach((v) => { out[v.displayName] = { nsk: v.nsk, dosatuy: v.dosatuy, advanced: v.advanced }; });
+  return out;
 }
 
 function renderSummary() {
@@ -177,6 +195,16 @@ function renderSummary() {
   grid.appendChild(statCard("Начислено · Досатуй", fmtMoney(grandDosatuy)));
   wrap.appendChild(grid);
   wrap.appendChild(statCard("Всего по обеим бригадам", fmtMoney(grandNsk + grandDosatuy)));
+
+  const grandAdvanced = names.reduce((s, n) => s + combined[n].advanced, 0);
+  const grandRemain = (grandNsk + grandDosatuy) - grandAdvanced;
+  wrap.appendChild(statCard("Осталось выплатить всем", fmtMoney(grandRemain), grandRemain < 0 ? "text-brick" : "text-shift"));
+
+  if (names.length) {
+    const exportBtn = el("button", "w-full py-2.5 rounded-lg bg-white border border-diesel text-diesel font-semibold text-sm flex items-center justify-center", `${ICONS.coin}<span class="ml-1">Скачать реестр на выплату (Excel)</span>`);
+    exportBtn.onclick = () => exportPayrollExcel(combined, names);
+    wrap.appendChild(exportBtn);
+  }
 
   wrap.appendChild(el("div", "text-xs font-bold text-slate-400 uppercase tracking-wide pt-1", "К выплате — по каждому человеку"));
   const card = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
@@ -208,8 +236,45 @@ function renderSummary() {
   app.appendChild(wrap);
 }
 
-function statCard(label, value) {
+function statCard(label, value, colorClass) {
   const c = el("div", "bg-white rounded-xl border border-slate-200 p-3 text-center");
-  c.innerHTML = `<div class="text-lg font-bold font-num text-diesel">${value}</div><div class="text-[10px] text-slate-400 mt-0.5">${label}</div>`;
+  c.innerHTML = `<div class="text-lg font-bold font-num ${colorClass || "text-diesel"}">${value}</div><div class="text-[10px] text-slate-400 mt-0.5">${label}</div>`;
   return c;
+}
+
+// находим карточку водителя по фамилии+имени (та же логика сопоставления,
+// что и везде), чтобы подтянуть реквизиты для реестра на выплату
+function driverBankInfo(name) {
+  const key = nameKey(name);
+  const match = driversCache.find((d) => nameKey(d.fullName) === key);
+  return { bank: (match && match.bankName) || "", account: (match && match.bankAccount) || "" };
+}
+
+function exportPayrollExcel(combined, names) {
+  const sorted = names.slice().sort((a, b) => a.localeCompare(b));
+
+  const registryRows = [["№", "ФИО", "Банк", "Счёт / карта", "Остаток к выплате, ₽"]];
+  sorted.forEach((name, i) => {
+    const t = combined[name];
+    const remain = (t.nsk + t.dosatuy) - t.advanced;
+    const bank = driverBankInfo(name);
+    registryRows.push([i + 1, name, bank.bank, bank.account, remain]);
+  });
+  const totalRemain = sorted.reduce((s, n) => s + ((combined[n].nsk + combined[n].dosatuy) - combined[n].advanced), 0);
+  registryRows.push(["", "ИТОГО", "", "", totalRemain]);
+
+  const detailRows = [["ФИО", "Начислено · Новосибирск, ₽", "Начислено · Досатуй, ₽", "Начислено всего, ₽", "Аванс, ₽", "Остаток, ₽"]];
+  sorted.forEach((name) => {
+    const t = combined[name];
+    const earned = t.nsk + t.dosatuy;
+    detailRows.push([name, t.nsk, t.dosatuy, earned, t.advanced, earned - t.advanced]);
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws1 = XLSX.utils.aoa_to_sheet(registryRows);
+  XLSX.utils.book_append_sheet(wb, ws1, "Реестр на выплату");
+  const ws2 = XLSX.utils.aoa_to_sheet(detailRows);
+  XLSX.utils.book_append_sheet(wb, ws2, "Детализация");
+
+  XLSX.writeFile(wb, `Табель_${MONTHS_RU[selectedMonth]}_${selectedYear}.xlsx`);
 }

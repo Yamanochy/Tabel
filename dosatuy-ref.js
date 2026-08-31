@@ -31,26 +31,38 @@ function maintBasePayRef(doc) {
 }
 
 // { name -> { shifts, maint, total } } за выбранный месяц — используется
-// и во вкладке «Досатуй», и во вкладке «Итого»
+// и во вкладке «Досатуй», и во вкладке «Итого». Сначала группируем по
+// фамилии+имени (см. nameKey в app.js), чтобы старое и новое написание
+// ФИО одного человека не расходились на две строки.
 function computeDosatuyTotals() {
-  const perDriver = {};
+  const perKey = {}; // key -> { displayName, shifts, maint, total }
+  const ensure = (name) => {
+    const key = nameKey(name);
+    if (!perKey[key]) perKey[key] = { displayName: name, shifts: 0, maint: 0, total: 0 };
+    perKey[key].displayName = bestName(perKey[key].displayName, name);
+    return perKey[key];
+  };
+
   dosatuyTtnCache.forEach((d) => {
     if (!inSelectedMonth(d.ttnDate, selectedYear, selectedMonth)) return;
-    if (!perDriver[d.driverName]) perDriver[d.driverName] = { shifts: 0, maint: 0, total: 0 };
-    perDriver[d.driverName].shifts += 1;
-    perDriver[d.driverName].total += 6000;
+    const rec = ensure(d.driverName);
+    rec.shifts += 1;
+    rec.total += 6000;
   });
   dosatuyMaintCache.forEach((m) => {
     if (!inSelectedMonth(m.date, selectedYear, selectedMonth)) return;
     const workers = [m.primaryWorker, m.secondaryWorker].filter(Boolean);
     const share = workers.length === 2 ? Math.round(maintBasePayRef(m) / 2) : maintBasePayRef(m);
     workers.forEach((w) => {
-      if (!perDriver[w]) perDriver[w] = { shifts: 0, maint: 0, total: 0 };
-      perDriver[w].maint += share;
-      perDriver[w].total += share;
+      const rec = ensure(w);
+      rec.maint += share;
+      rec.total += share;
     });
   });
-  return perDriver;
+
+  const out = {};
+  Object.values(perKey).forEach((v) => { out[v.displayName] = { shifts: v.shifts, maint: v.maint, total: v.total }; });
+  return out;
 }
 
 function renderDosatuyRef() {

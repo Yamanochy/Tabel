@@ -6,7 +6,9 @@
 
 let driversCache = [];
 let driversUnsub = null;
-let driverLicenseFile = null;
+let driverLicenseFiles = []; // новые фото, ещё не загруженные
+let driverExistingPhotos = []; // уже загруженные фото при редактировании (можно удалять)
+const DRIVER_PHOTO_LIMIT = 5;
 
 function subscribeDrivers() {
   if (driversUnsub) return;
@@ -17,6 +19,14 @@ function subscribeDrivers() {
       if (currentTab === "shifts" && !shiftFormOpen) render();
       if (currentTab === "summary") render();
     }, (err) => console.error(err));
+}
+
+// на случай старых записей, где было одно фото в licensePhotoUrl —
+// приводим к единому виду (массив)
+function driverPhotos(d) {
+  if (Array.isArray(d.licensePhotoUrls)) return d.licensePhotoUrls;
+  if (d.licensePhotoUrl) return [d.licensePhotoUrl];
+  return [];
 }
 
 function renderDrivers() {
@@ -34,9 +44,10 @@ function renderDrivers() {
   } else {
     const body = el("div", "divide-y divide-slate-100");
     active.forEach((d) => {
+      const photos = driverPhotos(d);
       const row = el("div", "p-4");
-      const avatar = d.licensePhotoUrl
-        ? `<img src="${d.licensePhotoUrl}" class="w-9 h-9 rounded-full object-cover shrink-0" />`
+      const avatar = photos.length
+        ? `<div class="relative shrink-0"><img src="${photos[0]}" class="w-9 h-9 rounded-full object-cover" />${photos.length > 1 ? `<span class="absolute -bottom-1 -right-1 bg-diesel text-white text-[9px] font-num rounded-full w-4 h-4 flex items-center justify-center">${photos.length}</span>` : ""}</div>`
         : `<div class="w-9 h-9 rounded-full bg-diesel/5 flex items-center justify-center text-diesel shrink-0">${ICONS.drivers}</div>`;
       row.innerHTML = `
         <div class="flex items-center gap-3 mb-2">
@@ -63,7 +74,8 @@ function renderDrivers() {
 }
 
 function openDriverForm(existing) {
-  driverLicenseFile = null;
+  driverLicenseFiles = [];
+  driverExistingPhotos = existing ? driverPhotos(existing).slice() : [];
   const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
   const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto");
   const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : "";
@@ -78,14 +90,14 @@ function openDriverForm(existing) {
     <label class="block text-xs text-slate-500">Удостоверение (номер)
       <input id="df-license" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${f("licenseNumber")}" />
     </label>
-    <div class="text-xs text-slate-500">Фото водительского удостоверения</div>
+    <div class="text-xs text-slate-500">Фото водительского удостоверения (можно до ${DRIVER_PHOTO_LIMIT} штук)</div>
     <div class="flex gap-2">
       <button id="df-cam" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm flex items-center justify-center">${ICONS.camera}Камера</button>
       <button id="df-gal" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm">Галерея</button>
     </div>
     <input type="file" accept="image/*" capture="environment" id="df-cam-input" class="hidden" />
-    <input type="file" accept="image/*" id="df-gal-input" class="hidden" />
-    <div id="df-thumb"></div>
+    <input type="file" accept="image/*" multiple id="df-gal-input" class="hidden" />
+    <div id="df-thumbs" class="flex gap-2 flex-wrap"></div>
     <div class="text-xs text-slate-400 font-semibold pt-1">Ставки оплаты</div>
     <label class="block text-xs text-slate-500">Почасовая ставка, ₽/час
       <input id="df-hourly" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" value="${existing && existing.hourlyRate ? existing.hourlyRate : ""}" />
@@ -110,16 +122,44 @@ function openDriverForm(existing) {
   overlay.appendChild(card);
   document.body.appendChild(overlay);
 
-  function renderThumb() {
-    const box = card.querySelector("#df-thumb");
-    const src = driverLicenseFile ? URL.createObjectURL(driverLicenseFile) : (existing && existing.licensePhotoUrl);
-    box.innerHTML = src ? `<img src="${src}" class="w-20 h-20 object-cover rounded-lg" />` : `<div class="text-xs text-slate-400">Фото не выбрано</div>`;
+  function totalPhotoCount() { return driverExistingPhotos.length + driverLicenseFiles.length; }
+
+  function renderThumbs() {
+    const box = card.querySelector("#df-thumbs");
+    box.innerHTML = "";
+    driverExistingPhotos.forEach((url, i) => {
+      const wrap = el("div", "relative w-16 h-16");
+      const img = el("img", "w-16 h-16 object-cover rounded-lg cursor-pointer");
+      img.src = url;
+      img.onclick = () => window.open(url, "_blank");
+      const del = el("button", "absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-brick text-white text-xs flex items-center justify-center", "✕");
+      del.onclick = () => { driverExistingPhotos.splice(i, 1); renderThumbs(); };
+      wrap.appendChild(img); wrap.appendChild(del);
+      box.appendChild(wrap);
+    });
+    driverLicenseFiles.forEach((f2, i) => {
+      const wrap = el("div", "relative w-16 h-16");
+      const img = el("img", "w-16 h-16 object-cover rounded-lg");
+      img.src = URL.createObjectURL(f2);
+      const del = el("button", "absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-brick text-white text-xs flex items-center justify-center", "✕");
+      del.onclick = () => { driverLicenseFiles.splice(i, 1); renderThumbs(); };
+      wrap.appendChild(img); wrap.appendChild(del);
+      box.appendChild(wrap);
+    });
+    if (!totalPhotoCount()) box.innerHTML = `<div class="text-xs text-slate-400">Фото не выбрано</div>`;
   }
-  renderThumb();
+  renderThumbs();
+
+  function addFiles(files) {
+    const room = DRIVER_PHOTO_LIMIT - totalPhotoCount();
+    if (room <= 0) { alert(`Можно приложить не больше ${DRIVER_PHOTO_LIMIT} фото.`); return; }
+    Array.from(files).slice(0, room).forEach((f2) => driverLicenseFiles.push(f2));
+    renderThumbs();
+  }
   card.querySelector("#df-cam").onclick = () => card.querySelector("#df-cam-input").click();
   card.querySelector("#df-gal").onclick = () => card.querySelector("#df-gal-input").click();
-  card.querySelector("#df-cam-input").onchange = (e) => { if (e.target.files[0]) { driverLicenseFile = e.target.files[0]; renderThumb(); } };
-  card.querySelector("#df-gal-input").onchange = (e) => { if (e.target.files[0]) { driverLicenseFile = e.target.files[0]; renderThumb(); } };
+  card.querySelector("#df-cam-input").onchange = (e) => { if (e.target.files[0]) addFiles([e.target.files[0]]); };
+  card.querySelector("#df-gal-input").onchange = (e) => { addFiles(e.target.files); };
 
   card.querySelector("#df-cancel").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
@@ -145,11 +185,13 @@ function openDriverForm(existing) {
     const btn = card.querySelector("#df-save");
     btn.disabled = true; btn.textContent = "Сохраняю…";
     try {
-      if (driverLicenseFile) {
-        btn.textContent = "Загружаю фото…";
-        const resized = await resizeImageTabel(driverLicenseFile);
-        payload.licensePhotoUrl = await uploadToCloudinary(resized);
+      const newUrls = [];
+      for (let i = 0; i < driverLicenseFiles.length; i++) {
+        btn.textContent = `Загружаю фото ${i + 1}/${driverLicenseFiles.length}…`;
+        const resized = await resizeImageTabel(driverLicenseFiles[i]);
+        newUrls.push(await uploadToCloudinary(resized));
       }
+      payload.licensePhotoUrls = [...driverExistingPhotos, ...newUrls];
       btn.textContent = "Сохраняю…";
       if (existing) {
         await db.collection("tabelDrivers").doc(existing.id).update(payload);

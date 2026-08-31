@@ -116,7 +116,13 @@ function renderShifts() {
 
 function renderShiftForm(existing) {
   const card = el("div", "bg-white rounded-xl border border-slate-200 p-4 space-y-3");
-  const activeDrivers = driversCache.filter((d) => d.active !== false || (existing && d.id === existing.driverId));
+  // в «Сменах» показываем только тех, у кого вообще задана хоть одна ставка —
+  // иначе в списке мешаются и водители Досатуй, которых сюда завели просто
+  // как общую картотеку (см. вкладку «Водители»), но которые на технике
+  // в Новосибирске не работают
+  const activeDrivers = driversCache.filter((d) =>
+    (d.active !== false && (d.hourlyRate || d.shiftRate)) || (existing && d.id === existing.driverId)
+  );
   const activeEquipment = equipmentCache.filter((e) => e.active !== false || (existing && e.id === existing.equipmentId));
 
   card.innerHTML = `
@@ -151,7 +157,7 @@ function renderShiftForm(existing) {
       <input id="sf-note" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${existing && existing.note ? escapeHtml(existing.note) : ""}" />
     </label>
     <div class="text-xs text-slate-500">Путевой лист (фото, можно несколько)</div>
-    ${existing && existing.photoUrls && existing.photoUrls.length ? `<div class="flex gap-2 flex-wrap">${existing.photoUrls.map((u) => `<img src="${u}" class="w-16 h-16 object-cover rounded-lg" />`).join("")}</div><div class="text-[11px] text-slate-400">Уже прикреплённые фото — можно добавить ещё:</div>` : ""}
+    <div id="sf-existing-thumbs" class="flex gap-2 flex-wrap"></div>
     <div class="flex gap-2">
       <button id="sf-cam" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm flex items-center justify-center">${ICONS.camera}Камера</button>
       <button id="sf-gal" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm">Галерея</button>
@@ -164,6 +170,24 @@ function renderShiftForm(existing) {
       <button id="sf-save" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Сохранить</button>
       <button id="sf-cancel" class="px-4 py-2.5 rounded-lg bg-slate-100 text-slate-600 font-semibold text-sm">Отмена</button>
     </div>`;
+
+  let shiftExistingPhotos = existing && existing.photoUrls ? existing.photoUrls.slice() : [];
+  function renderExistingThumbs() {
+    const box = card.querySelector("#sf-existing-thumbs");
+    if (!shiftExistingPhotos.length) { box.innerHTML = ""; return; }
+    box.innerHTML = "";
+    shiftExistingPhotos.forEach((url, i) => {
+      const wrap = el("div", "relative w-16 h-16");
+      const img = el("img", "w-16 h-16 object-cover rounded-lg cursor-pointer");
+      img.src = url;
+      img.onclick = () => window.open(url, "_blank");
+      const del = el("button", "absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-brick text-white text-xs flex items-center justify-center", "✕");
+      del.onclick = () => { shiftExistingPhotos.splice(i, 1); renderExistingThumbs(); };
+      wrap.appendChild(img); wrap.appendChild(del);
+      box.appendChild(wrap);
+    });
+  }
+  renderExistingThumbs();
 
   const driverSelect = card.querySelector("#sf-driver");
   const hoursWrap = card.querySelector("#sf-hours-wrap");
@@ -303,7 +327,7 @@ function renderShiftForm(existing) {
         newUrls.push(await uploadToCloudinary(resizedBlobs[i]));
       }
       if (existing) {
-        const photoUrls = [...(existing.photoUrls || []), ...newUrls];
+        const photoUrls = [...shiftExistingPhotos, ...newUrls];
         await db.collection("tabelShifts").doc(existing.id).update({ ...payload, photoUrls });
       } else {
         await db.collection("tabelShifts").add({ ...payload, photoUrls: newUrls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });

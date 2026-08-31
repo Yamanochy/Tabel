@@ -103,6 +103,7 @@ async function flushOfflineQueue() {
     if (typeof currentTab !== "undefined") {
       if (syncedShift && currentTab === "shifts" && !shiftFormOpen) render();
       if (syncedAdvance && currentTab === "advances" && !advanceFormOpen) render();
+      if ((syncedShift || syncedAdvance) && currentTab === "summary") render();
     }
   }
 }

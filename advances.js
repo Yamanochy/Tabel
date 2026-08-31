@@ -78,7 +78,12 @@ function renderAdvanceForm() {
   const card = el("div", "bg-white rounded-xl border border-slate-200 p-4 space-y-3");
   const nskNames = driversCache.filter((d) => d.active !== false).map((d) => d.fullName);
   const dosatuyNames = (typeof computeDosatuyTotals === "function") ? Object.keys(computeDosatuyTotals()) : [];
-  const allNames = Array.from(new Set([...nskNames, ...dosatuyNames])).sort((a, b) => a.localeCompare(b));
+  const nameMap = {}; // ключ (фамилия+имя) -> самый полный вариант написания
+  [...nskNames, ...dosatuyNames].forEach((n) => {
+    const key = nameKey(n);
+    nameMap[key] = bestName(nameMap[key], n);
+  });
+  const allNames = Object.values(nameMap).sort((a, b) => a.localeCompare(b));
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">Выдать аванс</div>
     <label class="block text-xs text-slate-500">Дата
