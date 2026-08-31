@@ -1,16 +1,19 @@
 // ============================================================
-// АВАНСЫ — произвольные суммы, выданные водителю до расчёта.
+// АВАНСЫ — произвольные суммы, выданные водителю до расчёта,
+// с фото чека/подтверждения перевода.
 // ============================================================
 
 let advancesCache = [];
 let advancesUnsub = null;
+let advanceFormOpen = false;
+let advanceSelectedFiles = [];
 
 function subscribeAdvances() {
   if (advancesUnsub) return;
   advancesUnsub = db.collection("tabelAdvances").orderBy("date", "desc")
     .onSnapshot((snap) => {
       advancesCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      if (currentTab === "advances") render();
+      if (currentTab === "advances" && !advanceFormOpen) render();
       if (currentTab === "summary") render();
     }, (err) => console.error(err));
 }
@@ -20,9 +23,17 @@ function renderAdvances() {
   const wrap = el("div", "space-y-3");
   wrap.appendChild(monthSwitcher());
 
+  if (advanceFormOpen) {
+    wrap.appendChild(renderAdvanceForm());
+    app.appendChild(wrap);
+    return;
+  }
+
   const addBtn = el("button", "w-full py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm flex items-center justify-center", `${ICONS.plus}<span class="ml-1">Выдать аванс</span>`);
-  addBtn.onclick = () => openAdvanceForm();
+  addBtn.onclick = () => { advanceFormOpen = true; advanceSelectedFiles = []; render(); };
   wrap.appendChild(addBtn);
+
+  renderAdvancePendingBanner(wrap);
 
   const list = advancesCache.filter((a) => inSelectedMonth(a.date, selectedYear, selectedMonth));
   const card = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
@@ -32,12 +43,22 @@ function renderAdvances() {
     const body = el("div", "divide-y divide-slate-100");
     list.forEach((a) => {
       const row = el("div", "p-4 flex items-center gap-3");
-      row.innerHTML = `
-        <div class="flex-1 min-w-0">
-          <div class="font-semibold text-slate-800">${escapeHtml(a.driverName)}</div>
-          <div class="text-xs text-slate-400">${fmtRU(new Date(a.date + "T00:00:00"))}${a.note ? " · " + escapeHtml(a.note) : ""}</div>
-        </div>
-        <div class="font-bold font-num text-route-600">${fmtMoney(a.amount)}</div>`;
+      const thumbWrap = el("div", "shrink-0 w-12 h-12 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center");
+      if (a.receiptUrls && a.receiptUrls[0]) {
+        const img = el("img", "w-12 h-12 object-cover cursor-pointer");
+        img.src = a.receiptUrls[0];
+        img.onclick = () => window.open(a.receiptUrls[0], "_blank");
+        thumbWrap.appendChild(img);
+      } else {
+        thumbWrap.innerHTML = ICONS.coin;
+      }
+      row.appendChild(thumbWrap);
+      const info = el("div", "flex-1 min-w-0");
+      info.innerHTML = `
+        <div class="font-semibold text-slate-800">${escapeHtml(a.driverName)}</div>
+        <div class="text-xs text-slate-400">${fmtRU(new Date(a.date + "T00:00:00"))}${a.note ? " · " + escapeHtml(a.note) : ""}</div>`;
+      row.appendChild(info);
+      row.appendChild(el("div", "font-bold font-num text-route-600 shrink-0", fmtMoney(a.amount)));
       const del = el("button", "text-slate-300 hover:text-brick shrink-0 px-1", "✕");
       del.onclick = async () => {
         if (confirm(`Удалить запись об авансе ${fmtMoney(a.amount)} для ${a.driverName}?`)) {
@@ -53,9 +74,8 @@ function renderAdvances() {
   app.appendChild(wrap);
 }
 
-function openAdvanceForm() {
-  const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
-  const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3");
+function renderAdvanceForm() {
+  const card = el("div", "bg-white rounded-xl border border-slate-200 p-4 space-y-3");
   const activeDrivers = driversCache.filter((d) => d.active !== false);
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">Выдать аванс</div>
@@ -74,41 +94,114 @@ function openAdvanceForm() {
     <label class="block text-xs text-slate-500">Комментарий (необязательно)
       <input id="av-note" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
     </label>
+    <div class="text-xs text-slate-500">Чек / подтверждение перевода (фото, необязательно)</div>
+    <div class="flex gap-2">
+      <button id="av-cam" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm flex items-center justify-center">${ICONS.camera}Камера</button>
+      <button id="av-gal" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm">Галерея</button>
+    </div>
+    <input type="file" accept="image/*" capture="environment" id="av-cam-input" class="hidden" />
+    <input type="file" accept="image/*" multiple id="av-gal-input" class="hidden" />
+    <div id="av-thumbs" class="flex gap-2 flex-wrap"></div>
     <div id="av-error" class="text-xs text-brick hidden"></div>
     <div class="flex gap-2 pt-1">
       <button id="av-save" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Сохранить</button>
       <button id="av-cancel" class="px-4 py-2.5 rounded-lg bg-slate-100 text-slate-600 font-semibold text-sm">Отмена</button>
     </div>`;
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-  card.querySelector("#av-cancel").onclick = () => overlay.remove();
+
+  function renderThumbs() {
+    const box = card.querySelector("#av-thumbs");
+    box.innerHTML = "";
+    advanceSelectedFiles.forEach((f, i) => {
+      const wrap = el("div", "relative w-16 h-16");
+      const img = el("img", "w-16 h-16 object-cover rounded-lg");
+      img.src = URL.createObjectURL(f);
+      const del = el("button", "absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-brick text-white text-xs flex items-center justify-center", "✕");
+      del.onclick = () => { advanceSelectedFiles.splice(i, 1); renderThumbs(); };
+      wrap.appendChild(img); wrap.appendChild(del);
+      box.appendChild(wrap);
+    });
+  }
+  card.querySelector("#av-cam").onclick = () => card.querySelector("#av-cam-input").click();
+  card.querySelector("#av-gal").onclick = () => card.querySelector("#av-gal-input").click();
+  card.querySelector("#av-cam-input").onchange = (e) => { if (e.target.files[0]) advanceSelectedFiles.push(e.target.files[0]); renderThumbs(); };
+  card.querySelector("#av-gal-input").onchange = (e) => { Array.from(e.target.files).forEach((f) => advanceSelectedFiles.push(f)); renderThumbs(); };
+
+  card.querySelector("#av-cancel").onclick = () => { advanceFormOpen = false; advanceSelectedFiles = []; render(); };
 
   card.querySelector("#av-save").onclick = async () => {
     const date = card.querySelector("#av-date").value;
     const driverId = card.querySelector("#av-driver").value;
     const amount = Number(card.querySelector("#av-amount").value);
     const errBox = card.querySelector("#av-error");
+    const saveBtn = card.querySelector("#av-save");
     if (!date || !driverId || !amount) {
       errBox.textContent = "Заполни дату, водителя и сумму.";
       errBox.classList.remove("hidden");
       return;
     }
     const driver = driversCache.find((d) => d.id === driverId);
-    const btn = card.querySelector("#av-save");
-    btn.disabled = true; btn.textContent = "Сохраняю…";
+    errBox.classList.add("hidden");
+    saveBtn.disabled = true;
+
+    const payload = {
+      date, driverId, driverName: driver.fullName, amount,
+      note: card.querySelector("#av-note").value.trim(),
+      createdByUid: currentUser.uid, createdByName: currentProfileName,
+    };
+
+    let resizedBlobs = [];
     try {
-      await db.collection("tabelAdvances").add({
-        date, driverId, driverName: driver.fullName, amount,
-        note: card.querySelector("#av-note").value.trim(),
-        createdByUid: currentUser.uid, createdByName: currentProfileName,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      });
-      overlay.remove();
+      for (let i = 0; i < advanceSelectedFiles.length; i++) {
+        saveBtn.textContent = `Готовлю фото ${i + 1}/${advanceSelectedFiles.length}…`;
+        resizedBlobs.push(await resizeImageTabel(advanceSelectedFiles[i]));
+      }
     } catch (e) {
-      errBox.textContent = "Не получилось: " + e.message;
+      errBox.textContent = "Не получилось обработать фото: " + e.message;
       errBox.classList.remove("hidden");
-      btn.disabled = false; btn.textContent = "Сохранить";
+      saveBtn.disabled = false; saveBtn.textContent = "Сохранить";
+      return;
+    }
+
+    try {
+      if (!navigator.onLine) throw new Error("OFFLINE");
+      const urls = [];
+      for (let i = 0; i < resizedBlobs.length; i++) {
+        saveBtn.textContent = `Загружаю фото ${i + 1}/${resizedBlobs.length}…`;
+        urls.push(await uploadToCloudinary(resizedBlobs[i]));
+      }
+      await db.collection("tabelAdvances").add({ ...payload, receiptUrls: urls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      advanceFormOpen = false; advanceSelectedFiles = [];
+      render();
+    } catch (e) {
+      if (!looksLikeNetworkError(e)) {
+        errBox.textContent = "Не получилось сохранить: " + e.message;
+        errBox.classList.remove("hidden");
+        saveBtn.disabled = false; saveBtn.textContent = "Сохранить";
+        return;
+      }
+      try {
+        await queueAdd("advance", payload, resizedBlobs);
+        await refreshPendingQueueCache();
+        advanceFormOpen = false; advanceSelectedFiles = [];
+        render();
+      } catch (e2) {
+        errBox.textContent = "Не получилось сохранить даже локально: " + e2.message;
+        errBox.classList.remove("hidden");
+        saveBtn.disabled = false; saveBtn.textContent = "Сохранить";
+      }
     }
   };
+
+  return card;
+}
+
+function renderAdvancePendingBanner(wrap) {
+  const items = (typeof pendingQueueCache !== "undefined" ? pendingQueueCache : []).filter((q) => q.kind === "advance");
+  if (!items.length) return;
+  const banner = el("div", "bg-route/10 border border-route/40 rounded-xl p-3 flex items-center gap-2");
+  banner.innerHTML = `<div class="text-xs text-route-600 font-medium flex-1">${items.length} аванс${items.length === 1 ? " ждёт" : "а ждут"} интернета — отправится само</div>`;
+  const retryBtn = el("button", "text-[11px] font-semibold text-route-600 bg-white px-2.5 py-1.5 rounded-lg shrink-0", "Проверить сейчас");
+  retryBtn.onclick = () => { retryBtn.textContent = "…"; flushOfflineQueue(); };
+  banner.appendChild(retryBtn);
+  wrap.appendChild(banner);
 }

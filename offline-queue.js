@@ -75,7 +75,7 @@ function looksLikeNetworkError(e) {
 async function flushOfflineQueue() {
   if (offlineFlushInProgress) return;
   offlineFlushInProgress = true;
-  let syncedAny = false;
+  let syncedShift = false, syncedAdvance = false;
   try {
     await refreshPendingQueueCache();
     for (const item of pendingQueueCache) {
@@ -84,13 +84,15 @@ async function flushOfflineQueue() {
         for (const blob of item.photoBlobs) {
           urls.push(await uploadToCloudinary(blob));
         }
-        await db.collection("tabelShifts").add({
+        const coll = item.kind === "advance" ? "tabelAdvances" : "tabelShifts";
+        const urlField = item.kind === "advance" ? "receiptUrls" : "photoUrls";
+        await db.collection(coll).add({
           ...item.payload,
-          photoUrls: urls,
+          [urlField]: urls,
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
         await queueDelete(item.id);
-        syncedAny = true;
+        if (item.kind === "advance") syncedAdvance = true; else syncedShift = true;
       } catch (e) {
         break; // сети всё ещё нет — остальное попробуем позже
       }
@@ -98,8 +100,9 @@ async function flushOfflineQueue() {
   } finally {
     await refreshPendingQueueCache();
     offlineFlushInProgress = false;
-    if (syncedAny && !shiftFormOpen && typeof currentTab !== "undefined" && currentTab === "shifts") {
-      render();
+    if (typeof currentTab !== "undefined") {
+      if (syncedShift && currentTab === "shifts" && !shiftFormOpen) render();
+      if (syncedAdvance && currentTab === "advances" && !advanceFormOpen) render();
     }
   }
 }

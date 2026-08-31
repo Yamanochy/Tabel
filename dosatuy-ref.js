@@ -2,6 +2,8 @@
 // ДОСАТУЙ (СПРАВОЧНО) — читает те же данные напрямую из базы Досатуй
 // (тот же проект), только для просмотра. Ничего здесь не редактируется —
 // править записи можно только в самом приложении Досатуй.
+// Подписка стартует сразу при входе (не только при заходе на вкладку),
+// чтобы цифры были готовы и во вкладке «Итого».
 // ============================================================
 
 let dosatuyTtnCache = [];
@@ -12,13 +14,13 @@ function subscribeDosatuyRef() {
   if (!dosatuyUnsub1) {
     dosatuyUnsub1 = db.collection("ttnDocs").onSnapshot((snap) => {
       dosatuyTtnCache = snap.docs.map((d) => d.data());
-      if (currentTab === "dosatuy") render();
+      if (currentTab === "dosatuy" || currentTab === "summary") render();
     }, () => {});
   }
   if (!dosatuyUnsub2) {
     dosatuyUnsub2 = db.collection("maintenanceDocs").onSnapshot((snap) => {
       dosatuyMaintCache = snap.docs.map((d) => d.data());
-      if (currentTab === "dosatuy") render();
+      if (currentTab === "dosatuy" || currentTab === "summary") render();
     }, () => {});
   }
 }
@@ -28,19 +30,10 @@ function maintBasePayRef(doc) {
   return 6000;
 }
 
-function renderDosatuyRef() {
-  subscribeDosatuyRef(); // подписываемся лениво, только когда реально открыли вкладку
-  app.innerHTML = "";
-  const wrap = el("div", "space-y-3");
-  wrap.appendChild(monthSwitcher());
-
-  wrap.appendChild((() => {
-    const c = el("div", "bg-white rounded-xl border border-slate-200 p-3 flex items-center gap-2");
-    c.innerHTML = `<div class="text-xs text-slate-500">Данные читаются напрямую из приложения Досатуй — только для просмотра. Чтобы что-то поправить, открой само приложение Досатуй.</div>`;
-    return c;
-  })());
-
-  const perDriver = {}; // name -> { shifts, maint, total }
+// { name -> { shifts, maint, total } } за выбранный месяц — используется
+// и во вкладке «Досатуй», и во вкладке «Итого»
+function computeDosatuyTotals() {
+  const perDriver = {};
   dosatuyTtnCache.forEach((d) => {
     if (!inSelectedMonth(d.ttnDate, selectedYear, selectedMonth)) return;
     if (!perDriver[d.driverName]) perDriver[d.driverName] = { shifts: 0, maint: 0, total: 0 };
@@ -57,7 +50,21 @@ function renderDosatuyRef() {
       perDriver[w].total += share;
     });
   });
+  return perDriver;
+}
 
+function renderDosatuyRef() {
+  app.innerHTML = "";
+  const wrap = el("div", "space-y-3");
+  wrap.appendChild(monthSwitcher());
+
+  wrap.appendChild((() => {
+    const c = el("div", "bg-white rounded-xl border border-slate-200 p-3 flex items-center gap-2");
+    c.innerHTML = `<div class="text-xs text-slate-500">Данные читаются напрямую из приложения Досатуй — только для просмотра. Чтобы что-то поправить, открой само приложение Досатуй.</div>`;
+    return c;
+  })());
+
+  const perDriver = computeDosatuyTotals();
   const names = Object.keys(perDriver);
   const grandTotal = names.reduce((s, n) => s + perDriver[n].total, 0);
 

@@ -1,6 +1,6 @@
 // ============================================================
-// ТЕХНИКА — список техники в Новосибирске, у каждой единицы свой
-// тип оплаты (почасовая/посменная) и ставка.
+// ТЕХНИКА — просто список техники (название + гос. номер).
+// Ставка оплаты теперь у водителя, не у техники — см. drivers.js.
 // ============================================================
 
 let equipmentCache = [];
@@ -36,7 +36,7 @@ function renderEquipment() {
         <div class="w-9 h-9 rounded-lg bg-diesel/5 flex items-center justify-center text-diesel shrink-0">${ICONS.equipment}</div>
         <div class="flex-1 min-w-0">
           <div class="font-semibold text-slate-800 truncate">${escapeHtml(e.name)}</div>
-          <div class="text-xs text-slate-400">${e.payType === "hourly" ? "Почасовая" : "Посменная"} · <span class="font-num">${fmtMoney(e.rate)}</span>${e.payType === "hourly" ? "/час" : "/смена"}</div>
+          <div class="text-xs text-slate-400 font-num">${e.plateNumber ? escapeHtml(e.plateNumber) : "гос. номер не указан"}</div>
         </div>`;
       const editBtn = el("button", "text-xs text-slate-500 bg-slate-100 px-2.5 py-1.5 rounded-lg font-medium shrink-0", "Изменить");
       editBtn.onclick = () => openEquipmentForm(e);
@@ -57,14 +57,8 @@ function openEquipmentForm(existing) {
     <label class="block text-xs text-slate-500">Название
       <input id="ef-name" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="напр. Экскаватор JCB 3CX" value="${existing ? escapeHtml(existing.name) : ""}" />
     </label>
-    <label class="block text-xs text-slate-500">Тип оплаты
-      <select id="ef-paytype" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
-        <option value="hourly" ${existing && existing.payType === "hourly" ? "selected" : ""}>Почасовая</option>
-        <option value="shift" ${existing && existing.payType === "shift" ? "selected" : ""}>Посменная</option>
-      </select>
-    </label>
-    <label class="block text-xs text-slate-500">Ставка, ₽
-      <input id="ef-rate" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" value="${existing ? existing.rate : ""}" />
+    <label class="block text-xs text-slate-500">Гос. номер
+      <input id="ef-plate" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" placeholder="напр. А123БВ 154" value="${existing ? escapeHtml(existing.plateNumber || "") : ""}" />
     </label>
     <div id="ef-error" class="text-xs text-brick hidden"></div>
     <div class="flex gap-2 pt-1">
@@ -81,18 +75,17 @@ function openEquipmentForm(existing) {
 
   card.querySelector("#ef-save").onclick = async () => {
     const name = card.querySelector("#ef-name").value.trim();
-    const payType = card.querySelector("#ef-paytype").value;
-    const rate = Number(card.querySelector("#ef-rate").value);
+    const plateNumber = card.querySelector("#ef-plate").value.trim();
     const errBox = card.querySelector("#ef-error");
-    if (!name || !rate) {
-      errBox.textContent = "Заполни название и ставку.";
+    if (!name) {
+      errBox.textContent = "Заполни название.";
       errBox.classList.remove("hidden");
       return;
     }
     const btn = card.querySelector("#ef-save");
     btn.disabled = true; btn.textContent = "Сохраняю…";
     try {
-      const payload = { name, payType, rate, active: true };
+      const payload = { name, plateNumber, active: true };
       if (existing) {
         await db.collection("tabelEquipment").doc(existing.id).update(payload);
       } else {

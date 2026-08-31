@@ -1,13 +1,14 @@
 // ============================================================
-// СМЕНЫ — основная запись: кто, на чём, когда работал, путевой лист.
-// Сумма считается сама по ставке техники и "замораживается" в самой
-// записи — если ставку потом поменяют в Настройках, старые смены не
-// пересчитаются задним числом.
+// СМЕНЫ — кто, на какой технике, сколько часов или посменно.
+// Ставка берётся из карточки водителя НА МОМЕНТ сохранения записи и
+// "замораживается" в самой смене — если ставку водителю потом
+// поднимут/снизят, уже сохранённые смены не пересчитаются задним числом.
 // ============================================================
 
 let shiftsCache = [];
 let shiftsUnsub = null;
 let shiftFormOpen = false;
+let shiftEditingId = null;
 let shiftSelectedFiles = [];
 
 function subscribeShifts() {
@@ -47,10 +48,9 @@ function uploadToCloudinary(blob) {
     .then((data) => data.secure_url);
 }
 
-function computeShiftPay(equipment, hours) {
-  if (!equipment) return 0;
-  if (equipment.payType === "hourly") return Number(equipment.rate || 0) * Number(hours || 0);
-  return Number(equipment.rate || 0);
+function computeShiftPay(payType, rate, hours) {
+  if (payType === "hourly") return Number(rate || 0) * Number(hours || 0);
+  return Number(rate || 0);
 }
 
 function renderShifts() {
@@ -59,13 +59,13 @@ function renderShifts() {
   wrap.appendChild(monthSwitcher());
 
   if (shiftFormOpen) {
-    wrap.appendChild(renderShiftForm());
+    wrap.appendChild(renderShiftForm(shiftEditingId ? shiftsCache.find((s) => s.id === shiftEditingId) : null));
     app.appendChild(wrap);
     return;
   }
 
   const addBtn = el("button", "w-full py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm flex items-center justify-center", `${ICONS.plus}<span class="ml-1">Добавить смену</span>`);
-  addBtn.onclick = () => { shiftFormOpen = true; shiftSelectedFiles = []; render(); };
+  addBtn.onclick = () => { shiftFormOpen = true; shiftEditingId = null; shiftSelectedFiles = []; render(); };
   wrap.appendChild(addBtn);
 
   renderPendingBanner(wrap);
@@ -88,15 +88,24 @@ function renderShifts() {
         thumbWrap.innerHTML = ICONS.camera;
       }
       row.appendChild(thumbWrap);
-      const info = el("div", "flex-1 min-w-0 text-sm");
+      const info = el("div", "flex-1 min-w-0 text-sm cursor-pointer");
       info.innerHTML = `
         <div class="font-bold text-slate-800">${escapeHtml(s.driverName)}</div>
-        <div class="text-xs text-slate-500">${escapeHtml(s.equipmentName)} · ${fmtRU(new Date(s.date + "T00:00:00"))}</div>
+        <div class="text-xs text-slate-500">${escapeHtml(s.equipmentName || "—")} · ${fmtRU(new Date(s.date + "T00:00:00"))}</div>
         <div class="text-xs text-slate-400">${s.payType === "hourly" ? (s.hours + " ч × " + fmtMoney(s.rate)) : ("посменно · " + fmtMoney(s.rate))}</div>`;
+      info.onclick = () => { shiftFormOpen = true; shiftEditingId = s.id; shiftSelectedFiles = []; render(); };
       row.appendChild(info);
-      const pay = el("div", "text-right shrink-0");
-      pay.innerHTML = `<div class="font-bold font-num text-diesel">${fmtMoney(s.computedPay)}</div>`;
-      row.appendChild(pay);
+      const right = el("div", "text-right shrink-0 flex flex-col items-end gap-1");
+      right.innerHTML = `<div class="font-bold font-num text-diesel">${fmtMoney(s.computedPay)}</div>`;
+      const del = el("button", "text-slate-300 hover:text-brick text-xs", "✕");
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (confirm(`Удалить смену ${escapeHtml(s.driverName)} за ${fmtRU(new Date(s.date + "T00:00:00"))}?`)) {
+          await db.collection("tabelShifts").doc(s.id).delete();
+        }
+      };
+      right.appendChild(del);
+      row.appendChild(right);
       body.appendChild(row);
     });
     card.appendChild(body);
@@ -105,36 +114,44 @@ function renderShifts() {
   app.appendChild(wrap);
 }
 
-function renderShiftForm() {
+function renderShiftForm(existing) {
   const card = el("div", "bg-white rounded-xl border border-slate-200 p-4 space-y-3");
-  const activeDrivers = driversCache.filter((d) => d.active !== false);
-  const activeEquipment = equipmentCache.filter((e) => e.active !== false);
+  const activeDrivers = driversCache.filter((d) => d.active !== false || (existing && d.id === existing.driverId));
+  const activeEquipment = equipmentCache.filter((e) => e.active !== false || (existing && e.id === existing.equipmentId));
 
   card.innerHTML = `
-    <div class="font-bold font-display text-lg text-diesel">Новая смена</div>
+    <div class="font-bold font-display text-lg text-diesel">${existing ? "Изменить смену" : "Новая смена"}</div>
     <label class="block text-xs text-slate-500">Дата
-      <input id="sf-date" type="date" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${todayISO()}" />
+      <input id="sf-date" type="date" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${existing ? existing.date : todayISO()}" />
     </label>
     <label class="block text-xs text-slate-500">Водитель
       <select id="sf-driver" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
         <option value="">Выбери водителя</option>
-        ${activeDrivers.map((d) => `<option value="${d.id}">${escapeHtml(d.fullName)}</option>`).join("")}
+        ${activeDrivers.map((d) => `<option value="${d.id}" ${existing && existing.driverId === d.id ? "selected" : ""}>${escapeHtml(d.fullName)}</option>`).join("")}
       </select>
     </label>
     <label class="block text-xs text-slate-500">Техника
       <select id="sf-equipment" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
         <option value="">Выбери технику</option>
-        ${activeEquipment.map((e) => `<option value="${e.id}" data-paytype="${e.payType}" data-rate="${e.rate}">${escapeHtml(e.name)} — ${fmtMoney(e.rate)}${e.payType === "hourly" ? "/ч" : "/смена"}</option>`).join("")}
+        ${activeEquipment.map((e) => `<option value="${e.id}" ${existing && existing.equipmentId === e.id ? "selected" : ""}>${escapeHtml(e.name)}${e.plateNumber ? " — " + escapeHtml(e.plateNumber) : ""}</option>`).join("")}
       </select>
     </label>
+    <div id="sf-paytype-wrap">
+      <div class="text-xs text-slate-500 mb-1">Оплата за эту смену</div>
+      <div class="flex gap-2" id="sf-paytype-btns">
+        <button type="button" data-val="hourly" class="sf-pt-btn flex-1 py-2 rounded-lg text-sm font-semibold border">Почасовая</button>
+        <button type="button" data-val="shift" class="sf-pt-btn flex-1 py-2 rounded-lg text-sm font-semibold border">Посменная</button>
+      </div>
+    </div>
     <label id="sf-hours-wrap" class="block text-xs text-slate-500 hidden">Часы за смену
-      <input id="sf-hours" type="number" min="0" step="0.5" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" placeholder="напр. 10" />
+      <input id="sf-hours" type="number" min="0" step="0.5" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" placeholder="напр. 10" value="${existing && existing.hours ? existing.hours : ""}" />
     </label>
     <div id="sf-pay-hint" class="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2"></div>
     <label class="block text-xs text-slate-500">Заметка (необязательно)
-      <input id="sf-note" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+      <input id="sf-note" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${existing && existing.note ? escapeHtml(existing.note) : ""}" />
     </label>
     <div class="text-xs text-slate-500">Путевой лист (фото, можно несколько)</div>
+    ${existing && existing.photoUrls && existing.photoUrls.length ? `<div class="flex gap-2 flex-wrap">${existing.photoUrls.map((u) => `<img src="${u}" class="w-16 h-16 object-cover rounded-lg" />`).join("")}</div><div class="text-[11px] text-slate-400">Уже прикреплённые фото — можно добавить ещё:</div>` : ""}
     <div class="flex gap-2">
       <button id="sf-cam" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm flex items-center justify-center">${ICONS.camera}Камера</button>
       <button id="sf-gal" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm">Галерея</button>
@@ -149,27 +166,61 @@ function renderShiftForm() {
     </div>`;
 
   const driverSelect = card.querySelector("#sf-driver");
-  const equipSelect = card.querySelector("#sf-equipment");
   const hoursWrap = card.querySelector("#sf-hours-wrap");
   const hoursInput = card.querySelector("#sf-hours");
   const payHint = card.querySelector("#sf-pay-hint");
+  let chosenPayType = existing ? existing.payType : null;
 
+  function currentDriver() {
+    return driversCache.find((d) => d.id === driverSelect.value);
+  }
+  function rateFor(payType) {
+    // при редактировании — если водитель и способ оплаты не менялись,
+    // берём ставку, уже сохранённую в самой записи, а не текущую ставку
+    // водителя (иначе просто исправление заметки задним числом пересчитало
+    // бы сумму по новой ставке)
+    if (existing && payType === existing.payType && driverSelect.value === existing.driverId) {
+      return Number(existing.rate || 0);
+    }
+    const d = currentDriver();
+    if (!d) return 0;
+    return payType === "hourly" ? Number(d.hourlyRate || 0) : Number(d.shiftRate || 0);
+  }
+  function updatePtButtons() {
+    card.querySelectorAll(".sf-pt-btn").forEach((b) => {
+      const active = b.dataset.val === chosenPayType;
+      b.className = "sf-pt-btn flex-1 py-2 rounded-lg text-sm font-semibold border " +
+        (active ? "bg-diesel text-white border-diesel" : "bg-white text-slate-600 border-slate-200");
+    });
+  }
   function updatePayHint() {
-    const opt = equipSelect.selectedOptions[0];
-    if (!opt || !opt.value) { payHint.textContent = "Выбери технику, чтобы увидеть сумму."; hoursWrap.classList.add("hidden"); return; }
-    const payType = opt.dataset.paytype;
-    const rate = Number(opt.dataset.rate);
-    hoursWrap.classList.toggle("hidden", payType !== "hourly");
-    if (payType === "hourly") {
+    const d = currentDriver();
+    if (!d) { payHint.textContent = "Сначала выбери водителя."; hoursWrap.classList.add("hidden"); return; }
+    if (!chosenPayType) { payHint.textContent = "Выбери, как оплачивается эта смена."; hoursWrap.classList.add("hidden"); return; }
+    const rate = rateFor(chosenPayType);
+    if (!rate) { payHint.textContent = `У водителя не указана ${chosenPayType === "hourly" ? "почасовая" : "посменная"} ставка — задай её в карточке водителя.`; hoursWrap.classList.toggle("hidden", chosenPayType !== "hourly"); return; }
+    hoursWrap.classList.toggle("hidden", chosenPayType !== "hourly");
+    if (chosenPayType === "hourly") {
       const hours = Number(hoursInput.value) || 0;
       payHint.textContent = `${hours} ч × ${fmtMoney(rate)} = ${fmtMoney(rate * hours)}`;
     } else {
       payHint.textContent = `Посменно: ${fmtMoney(rate)} за смену`;
     }
   }
-  equipSelect.onchange = updatePayHint;
+  card.querySelectorAll(".sf-pt-btn").forEach((b) => {
+    b.onclick = () => { chosenPayType = b.dataset.val; updatePtButtons(); updatePayHint(); };
+  });
+  driverSelect.onchange = () => {
+    // если у водителя только одна из ставок задана — выбираем её сами
+    const d = currentDriver();
+    if (d && !existing) {
+      if (d.hourlyRate && !d.shiftRate) chosenPayType = "hourly";
+      else if (d.shiftRate && !d.hourlyRate) chosenPayType = "shift";
+    }
+    updatePtButtons(); updatePayHint();
+  };
   hoursInput.oninput = updatePayHint;
-  updatePayHint();
+  updatePtButtons(); updatePayHint();
 
   function renderThumbs() {
     const box = card.querySelector("#sf-thumbs");
@@ -190,24 +241,30 @@ function renderShiftForm() {
   card.querySelector("#sf-cam-input").onchange = (e) => { if (e.target.files[0]) shiftSelectedFiles.push(e.target.files[0]); renderThumbs(); };
   card.querySelector("#sf-gal-input").onchange = (e) => { Array.from(e.target.files).forEach((f) => shiftSelectedFiles.push(f)); renderThumbs(); };
 
-  card.querySelector("#sf-cancel").onclick = () => { shiftFormOpen = false; shiftSelectedFiles = []; render(); };
+  card.querySelector("#sf-cancel").onclick = () => { shiftFormOpen = false; shiftEditingId = null; shiftSelectedFiles = []; render(); };
 
   card.querySelector("#sf-save").onclick = async () => {
     const date = card.querySelector("#sf-date").value;
     const driverId = driverSelect.value;
-    const equipmentId = equipSelect.value;
+    const equipmentId = card.querySelector("#sf-equipment").value;
     const errBox = card.querySelector("#sf-error");
     const saveBtn = card.querySelector("#sf-save");
 
-    if (!date || !driverId || !equipmentId) {
-      errBox.textContent = "Заполни дату, водителя и технику.";
+    if (!date || !driverId || !chosenPayType) {
+      errBox.textContent = "Заполни дату, водителя и способ оплаты за смену.";
       errBox.classList.remove("hidden");
       return;
     }
     const driver = driversCache.find((d) => d.id === driverId);
     const equipment = equipmentCache.find((e) => e.id === equipmentId);
     const hours = Number(hoursInput.value) || 0;
-    if (equipment.payType === "hourly" && !hours) {
+    const rate = rateFor(chosenPayType);
+    if (!rate) {
+      errBox.textContent = `У водителя не задана ${chosenPayType === "hourly" ? "почасовая" : "посменная"} ставка.`;
+      errBox.classList.remove("hidden");
+      return;
+    }
+    if (chosenPayType === "hourly" && !hours) {
       errBox.textContent = "Укажи количество часов.";
       errBox.classList.remove("hidden");
       return;
@@ -217,10 +274,10 @@ function renderShiftForm() {
 
     const payload = {
       date, driverId, driverName: driver.fullName,
-      equipmentId, equipmentName: equipment.name,
-      payType: equipment.payType, rate: equipment.rate,
-      hours: equipment.payType === "hourly" ? hours : null,
-      computedPay: computeShiftPay(equipment, hours),
+      equipmentId: equipmentId || null, equipmentName: equipment ? equipment.name : "",
+      payType: chosenPayType, rate,
+      hours: chosenPayType === "hourly" ? hours : null,
+      computedPay: computeShiftPay(chosenPayType, rate, hours),
       note: card.querySelector("#sf-note").value.trim(),
       createdByUid: currentUser.uid, createdByName: currentProfileName,
     };
@@ -240,16 +297,21 @@ function renderShiftForm() {
 
     try {
       if (!navigator.onLine) throw new Error("OFFLINE");
-      const urls = [];
+      const newUrls = [];
       for (let i = 0; i < resizedBlobs.length; i++) {
         saveBtn.textContent = `Загружаю фото ${i + 1}/${resizedBlobs.length}…`;
-        urls.push(await uploadToCloudinary(resizedBlobs[i]));
+        newUrls.push(await uploadToCloudinary(resizedBlobs[i]));
       }
-      await db.collection("tabelShifts").add({ ...payload, photoUrls: urls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      shiftFormOpen = false; shiftSelectedFiles = [];
+      if (existing) {
+        const photoUrls = [...(existing.photoUrls || []), ...newUrls];
+        await db.collection("tabelShifts").doc(existing.id).update({ ...payload, photoUrls });
+      } else {
+        await db.collection("tabelShifts").add({ ...payload, photoUrls: newUrls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      }
+      shiftFormOpen = false; shiftEditingId = null; shiftSelectedFiles = [];
       render();
     } catch (e) {
-      if (!looksLikeNetworkError(e)) {
+      if (existing || !looksLikeNetworkError(e)) {
         errBox.textContent = "Не получилось сохранить: " + e.message;
         errBox.classList.remove("hidden");
         saveBtn.disabled = false; saveBtn.textContent = "Сохранить";
@@ -258,7 +320,7 @@ function renderShiftForm() {
       try {
         await queueAdd("shift", payload, resizedBlobs);
         await refreshPendingQueueCache();
-        shiftFormOpen = false; shiftSelectedFiles = [];
+        shiftFormOpen = false; shiftEditingId = null; shiftSelectedFiles = [];
         render();
       } catch (e2) {
         errBox.textContent = "Не получилось сохранить даже локально: " + e2.message;
@@ -275,7 +337,7 @@ function renderPendingBanner(wrap) {
   const items = (typeof pendingQueueCache !== "undefined" ? pendingQueueCache : []).filter((q) => q.kind === "shift");
   if (!items.length) return;
   const banner = el("div", "bg-route/10 border border-route/40 rounded-xl p-3 flex items-center gap-2");
-  banner.innerHTML = `<div class="text-xs text-route-600 font-medium flex-1">${items.length} смен${items.length === 1 ? "а ждёт" : "ы ждут"} интернета — отправится само</div>`;
+  banner.innerHTML = `<div class="text-xs text-route-600 font-medium flex-1">${items.length} запис${items.length === 1 ? "ь ждёт" : "и ждут"} интернета — отправится само</div>`;
   const retryBtn = el("button", "text-[11px] font-semibold text-route-600 bg-white px-2.5 py-1.5 rounded-lg shrink-0", "Проверить сейчас");
   retryBtn.onclick = () => { retryBtn.textContent = "…"; flushOfflineQueue(); };
   banner.appendChild(retryBtn);

@@ -1,11 +1,12 @@
 // ============================================================
-// ВОДИТЕЛИ — карточки с личными и банковскими данными, для расчёта
-// и перевода зарплаты. Отдельная, изолированная коллекция —
-// её не видит никто из водителей/руководителей Досатуй.
+// ВОДИТЕЛИ — личные и банковские данные + ставки оплаты (у каждого
+// водителя своя почасовая и посменная ставка — техника тут ни при чём).
+// Отдельная, изолированная коллекция.
 // ============================================================
 
 let driversCache = [];
 let driversUnsub = null;
+let driverLicenseFile = null;
 
 function subscribeDrivers() {
   if (driversUnsub) return;
@@ -34,9 +35,12 @@ function renderDrivers() {
     const body = el("div", "divide-y divide-slate-100");
     active.forEach((d) => {
       const row = el("div", "p-4");
+      const avatar = d.licensePhotoUrl
+        ? `<img src="${d.licensePhotoUrl}" class="w-9 h-9 rounded-full object-cover shrink-0" />`
+        : `<div class="w-9 h-9 rounded-full bg-diesel/5 flex items-center justify-center text-diesel shrink-0">${ICONS.drivers}</div>`;
       row.innerHTML = `
         <div class="flex items-center gap-3 mb-2">
-          <div class="w-9 h-9 rounded-full bg-diesel/5 flex items-center justify-center text-diesel shrink-0">${ICONS.drivers}</div>
+          ${avatar}
           <div class="flex-1 min-w-0">
             <div class="font-semibold text-slate-800 truncate">${escapeHtml(d.fullName)}</div>
             <div class="text-xs text-slate-400 truncate">${d.phone ? escapeHtml(d.phone) : "телефон не указан"}</div>
@@ -45,6 +49,7 @@ function renderDrivers() {
         <div class="text-xs text-slate-500 space-y-0.5 pl-12">
           ${d.licenseNumber ? `<div>Удостоверение: ${escapeHtml(d.licenseNumber)}</div>` : ""}
           ${d.bankName ? `<div>${escapeHtml(d.bankName)}${d.bankAccount ? " · " + escapeHtml(d.bankAccount) : ""}</div>` : ""}
+          <div class="font-num">${d.hourlyRate ? "Почасовая: " + fmtMoney(d.hourlyRate) + "/ч" : ""}${d.hourlyRate && d.shiftRate ? " · " : ""}${d.shiftRate ? "Посменная: " + fmtMoney(d.shiftRate) : ""}${!d.hourlyRate && !d.shiftRate ? "Ставки не указаны" : ""}</div>
         </div>`;
       const editBtn = el("button", "text-xs text-slate-500 bg-slate-100 px-2.5 py-1.5 rounded-lg font-medium mt-2 ml-12", "Изменить данные");
       editBtn.onclick = () => openDriverForm(d);
@@ -58,6 +63,7 @@ function renderDrivers() {
 }
 
 function openDriverForm(existing) {
+  driverLicenseFile = null;
   const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
   const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto");
   const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : "";
@@ -71,6 +77,21 @@ function openDriverForm(existing) {
     </label>
     <label class="block text-xs text-slate-500">Удостоверение (номер)
       <input id="df-license" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${f("licenseNumber")}" />
+    </label>
+    <div class="text-xs text-slate-500">Фото водительского удостоверения</div>
+    <div class="flex gap-2">
+      <button id="df-cam" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm flex items-center justify-center">${ICONS.camera}Камера</button>
+      <button id="df-gal" class="flex-1 py-2.5 rounded-lg bg-slate-100 text-slate-700 font-semibold text-sm">Галерея</button>
+    </div>
+    <input type="file" accept="image/*" capture="environment" id="df-cam-input" class="hidden" />
+    <input type="file" accept="image/*" id="df-gal-input" class="hidden" />
+    <div id="df-thumb"></div>
+    <div class="text-xs text-slate-400 font-semibold pt-1">Ставки оплаты</div>
+    <label class="block text-xs text-slate-500">Почасовая ставка, ₽/час
+      <input id="df-hourly" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" value="${existing && existing.hourlyRate ? existing.hourlyRate : ""}" />
+    </label>
+    <label class="block text-xs text-slate-500">Посменная ставка, ₽/смена
+      <input id="df-shift" type="number" min="0" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" value="${existing && existing.shiftRate ? existing.shiftRate : ""}" />
     </label>
     <div class="text-xs text-slate-400 font-semibold pt-1">Реквизиты для перевода зарплаты</div>
     <label class="block text-xs text-slate-500">Банк
@@ -89,6 +110,17 @@ function openDriverForm(existing) {
   overlay.appendChild(card);
   document.body.appendChild(overlay);
 
+  function renderThumb() {
+    const box = card.querySelector("#df-thumb");
+    const src = driverLicenseFile ? URL.createObjectURL(driverLicenseFile) : (existing && existing.licensePhotoUrl);
+    box.innerHTML = src ? `<img src="${src}" class="w-20 h-20 object-cover rounded-lg" />` : `<div class="text-xs text-slate-400">Фото не выбрано</div>`;
+  }
+  renderThumb();
+  card.querySelector("#df-cam").onclick = () => card.querySelector("#df-cam-input").click();
+  card.querySelector("#df-gal").onclick = () => card.querySelector("#df-gal-input").click();
+  card.querySelector("#df-cam-input").onchange = (e) => { if (e.target.files[0]) { driverLicenseFile = e.target.files[0]; renderThumb(); } };
+  card.querySelector("#df-gal-input").onchange = (e) => { if (e.target.files[0]) { driverLicenseFile = e.target.files[0]; renderThumb(); } };
+
   card.querySelector("#df-cancel").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
@@ -104,6 +136,8 @@ function openDriverForm(existing) {
       fullName,
       phone: card.querySelector("#df-phone").value.trim(),
       licenseNumber: card.querySelector("#df-license").value.trim(),
+      hourlyRate: Number(card.querySelector("#df-hourly").value) || null,
+      shiftRate: Number(card.querySelector("#df-shift").value) || null,
       bankName: card.querySelector("#df-bank").value.trim(),
       bankAccount: card.querySelector("#df-account").value.trim(),
       active: true,
@@ -111,6 +145,12 @@ function openDriverForm(existing) {
     const btn = card.querySelector("#df-save");
     btn.disabled = true; btn.textContent = "Сохраняю…";
     try {
+      if (driverLicenseFile) {
+        btn.textContent = "Загружаю фото…";
+        const resized = await resizeImageTabel(driverLicenseFile);
+        payload.licensePhotoUrl = await uploadToCloudinary(resized);
+      }
+      btn.textContent = "Сохраняю…";
       if (existing) {
         await db.collection("tabelDrivers").doc(existing.id).update(payload);
       } else {
