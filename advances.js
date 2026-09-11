@@ -35,7 +35,7 @@ function renderAdvances() {
 
   renderAdvancePendingBanner(wrap);
 
-  const list = advancesCache.filter((a) => inSelectedMonth(a.date, selectedYear, selectedMonth));
+  const list = advancesCache.filter((a) => advanceInSelectedMonth(a, selectedYear, selectedMonth));
   const card = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
   if (!list.length) {
     card.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "За этот месяц авансов ещё нет."));
@@ -56,7 +56,7 @@ function renderAdvances() {
       const info = el("div", "flex-1 min-w-0");
       info.innerHTML = `
         <div class="font-semibold text-slate-800">${escapeHtml(a.driverName)}</div>
-        <div class="text-xs text-slate-400">${fmtRU(new Date(a.date + "T00:00:00"))}${a.note ? " · " + escapeHtml(a.note) : ""}</div>`;
+        <div class="text-xs text-slate-400">переведено ${fmtRU(new Date(a.date + "T00:00:00"))}${a.note ? " · " + escapeHtml(a.note) : ""}</div>`;
       row.appendChild(info);
       row.appendChild(el("div", "font-bold font-num text-route-600 shrink-0", fmtMoney(a.amount)));
       const del = el("button", "text-slate-300 hover:text-brick shrink-0 px-1", "✕");
@@ -86,7 +86,8 @@ function renderAdvanceForm() {
   const allNames = Object.values(nameMap).sort((a, b) => a.localeCompare(b));
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">Выдать аванс</div>
-    <label class="block text-xs text-slate-500">Дата
+    <div class="text-xs bg-slate-50 rounded-lg px-3 py-2 text-slate-600">Аванс зачтётся в расчёт за <b>${MONTHS_RU[selectedMonth]} ${selectedYear}</b> (месяц выбран сверху). Дата ниже — это день, когда деньги реально перевели.</div>
+    <label class="block text-xs text-slate-500">Дата перевода
       <input id="av-date" type="date" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value="${todayISO()}" />
     </label>
     <label class="block text-xs text-slate-500">Водитель (Новосибирск или Досатуй)
@@ -155,6 +156,9 @@ function renderAdvanceForm() {
     const payload = {
       date, driverId: matchedDriver ? matchedDriver.id : null, driverName,
       amount,
+      // за какой месяц этот аванс — берём месяц, открытый в приложении,
+      // а не дату перевода (11 сентября можно выдать аванс за август)
+      periodYear: selectedYear, periodMonth: selectedMonth,
       note: card.querySelector("#av-note").value.trim(),
       createdByUid: currentUser.uid, createdByName: currentProfileName,
     };

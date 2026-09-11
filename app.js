@@ -48,6 +48,16 @@ function inSelectedMonth(dateStr, year, month) {
   return d.getFullYear() === year && d.getMonth() === month;
 }
 
+// Аванс относится к расчётному месяцу (за какой месяц выдан), а не к дате
+// перевода: 11 сентября можно выдать аванс за август. Если у старых записей
+// расчётного месяца ещё нет — берём месяц из даты платежа, как было раньше.
+function advanceInSelectedMonth(a, year, month) {
+  if (a.periodYear !== undefined && a.periodMonth !== undefined) {
+    return a.periodYear === year && a.periodMonth === month;
+  }
+  return inSelectedMonth(a.date, year, month);
+}
+
 // ---------- сопоставление одного и того же человека при разном написании ФИО ----------
 // например, "Мусаев Абдула" и "Мусаев Абдула Могомедович" (отчество добавили
 // позже) — старые записи в Досатуй "заморожены" со старым именем, поэтому
@@ -170,7 +180,7 @@ function computeCombinedTotals() {
   }
 
   (typeof advancesCache !== "undefined" ? advancesCache : []).forEach((a) => {
-    if (!inSelectedMonth(a.date, selectedYear, selectedMonth)) return;
+    if (!advanceInSelectedMonth(a, selectedYear, selectedMonth)) return;
     ensure(a.driverName).advanced += Number(a.amount || 0);
   });
 
