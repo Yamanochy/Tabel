@@ -4,7 +4,8 @@
 // Отдельная, изолированная коллекция.
 //
 // Здесь же выдаётся доступ в приложение «Смена» (водители техники
-// сами вносят смены со своего телефона):
+// сами вносят смены со своего телефона). Заявка подтверждается кнопкой
+// «Подтвердить» вверху вкладки или выбором аккаунта в карточке водителя:
 //   nskUsers  — заявки: кто зарегистрировался в «Смене» и ждёт доступа
 //   nskAccess — выданный доступ. Документ лежит под uid аккаунта
 //               водителя и хранит КОПИЮ ФИО и ставок из карточки.
@@ -111,24 +112,160 @@ function renderNskRequestsBanner(wrap) {
   box.appendChild(el("div", "text-sm font-semibold text-diesel",
     `Ждут доступа в «Смену»: ${waiting.length}`));
   box.appendChild(el("div", "text-xs text-slate-500 mt-1",
-    "Открой карточку водителя («Изменить данные») и выбери его аккаунт в поле «Доступ в приложение „Смена“». Нет карточки — сначала добавь водителя."));
+    "Нажми «Подтвердить» и укажи, чья это карточка. Если водителя ещё нет в списке, карточку создашь там же."));
   waiting.forEach((r) => {
-    const row = el("div", "flex items-center gap-2 mt-2 bg-white rounded-lg px-3 py-2");
+    // имя и почта — отдельной строкой над кнопками: на телефоне их нужно
+    // видеть целиком, иначе не понять, чья это заявка
+    const row = el("div", "mt-2 bg-white rounded-lg px-3 py-2");
+    row.dataset.request = r.id;
     row.innerHTML = `
-      <div class="flex-1 min-w-0">
-        <div class="text-sm font-semibold text-slate-800 truncate">${escapeHtml(r.name || "без имени")}</div>
-        <div class="text-xs text-slate-400 truncate">${escapeHtml(r.email || "")}${r.phone ? " · " + escapeHtml(r.phone) : ""}</div>
-      </div>`;
-    const reject = el("button", "shrink-0 text-xs text-brick font-semibold px-2 py-1", "Отклонить");
+      <div class="text-sm font-semibold text-slate-800 break-words">${escapeHtml(r.name || "без имени")}</div>
+      <div class="text-xs text-slate-400 break-all">${escapeHtml(r.email || "")}${r.phone ? " · " + escapeHtml(r.phone) : ""}</div>`;
+    const actions = el("div", "flex items-center gap-2 mt-2");
+    const approve = el("button", "flex-1 text-sm font-semibold text-white bg-diesel px-3 py-2 rounded-lg", "Подтвердить");
+    approve.onclick = () => openNskApproveDialog(r);
+    actions.appendChild(approve);
+    const reject = el("button", "shrink-0 text-sm text-brick font-semibold px-3 py-2", "Отклонить");
     reject.onclick = async () => {
       if (!confirm(`Отклонить заявку «${r.name || r.email}»? Человек сможет подать её заново.`)) return;
       try { await db.collection("nskUsers").doc(r.id).delete(); }
       catch (e) { alert("Не получилось: " + e.message); }
     };
-    row.appendChild(reject);
+    actions.appendChild(reject);
+    row.appendChild(actions);
     box.appendChild(row);
   });
   wrap.appendChild(box);
+}
+
+// ---------- подтверждение заявки на доступ ----------
+
+function nskNameWords(name) {
+  return String(name || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+// Карточка «подходит» заявке, если её фамилия и имя (первые два слова ФИО)
+// есть в имени из заявки в любом порядке: водитель мог написать и
+// «Ганжа Роман», и «Роман Ганжа», и с отчеством.
+function nskCardMatchesRequest(driver, request) {
+  const card = nskNameWords(driver.fullName).slice(0, 2);
+  const req = nskNameWords(request.name);
+  return card.length === 2 && card.every((w) => req.includes(w));
+}
+
+function nskRatesText(d) {
+  const parts = [];
+  if (d.hourlyRate) parts.push("почасовая " + fmtMoney(d.hourlyRate) + "/ч");
+  if (d.shiftRate) parts.push("посменная " + fmtMoney(d.shiftRate));
+  return parts.join(", ");
+}
+
+// Привязка аккаунта к уже существующей карточке — то же самое, что делает
+// сохранение карточки с выбранным аккаунтом, только без открытия формы.
+async function nskLinkExistingCard(driver, request) {
+  const linkedEmail = request.email || "";
+  const batch = db.batch();
+  batch.update(db.collection("tabelDrivers").doc(driver.id), { linkedUid: request.id, linkedEmail });
+  batch.set(db.collection("nskAccess").doc(request.id), nskAccessDoc(driver.id, {
+    fullName: driver.fullName,
+    hourlyRate: driver.hourlyRate || null,
+    shiftRate: driver.shiftRate || null,
+    linkedEmail,
+  }));
+  await batch.commit();
+  await nskRetagDriverRecords(driver.id, driver.fullName, request.id);
+}
+
+function openNskApproveDialog(request) {
+  // выбирать можно из действующих карточек, у которых ещё нет аккаунта
+  const candidates = driversCache.filter((d) => d.active !== false && !d.linkedUid);
+  const matches = candidates.filter((d) => nskCardMatchesRequest(d, request));
+  // подставляем карточку сами, только если совпадение ровно одно
+  const preselected = matches.length === 1 ? matches[0].id : "";
+
+  const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
+  const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto");
+  card.innerHTML = `
+    <div class="font-bold font-display text-lg text-diesel">Подтвердить доступ в «Смену»</div>
+    <div class="bg-slate-50 rounded-lg px-3 py-2">
+      <div class="text-sm font-semibold text-slate-800">${escapeHtml(request.name || "без имени")}</div>
+      <div class="text-xs text-slate-500">${escapeHtml(request.email || "")}${request.phone ? " · " + escapeHtml(request.phone) : ""}</div>
+    </div>
+    <label class="block text-xs text-slate-500">Чья это карточка
+      <select id="na-driver" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
+        <option value="">Выбери водителя</option>
+        ${candidates.map((d) => `<option value="${d.id}" ${d.id === preselected ? "selected" : ""}>${escapeHtml(d.fullName)}</option>`).join("")}
+        <option value="__new__">Новый водитель — создать карточку</option>
+      </select>
+    </label>
+    <div id="na-hint" class="text-xs text-slate-500"></div>
+    <div id="na-error" class="text-xs text-brick hidden"></div>
+    <div class="flex gap-2 pt-1">
+      <button id="na-ok" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Подтвердить</button>
+      <button id="na-cancel" class="px-4 py-2.5 rounded-lg bg-slate-100 text-slate-600 font-semibold text-sm">Отмена</button>
+    </div>`;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const select = card.querySelector("#na-driver");
+  const hint = card.querySelector("#na-hint");
+  const okBtn = card.querySelector("#na-ok");
+  const errBox = card.querySelector("#na-error");
+  const chosen = () => candidates.find((d) => d.id === select.value) || null;
+
+  function update() {
+    errBox.classList.add("hidden");
+    const d = chosen();
+    if (select.value === "__new__") {
+      hint.textContent = "Откроется новая карточка: проверь ФИО, задай ставки и нажми «Сохранить».";
+      okBtn.textContent = "Создать карточку";
+    } else if (!d) {
+      hint.textContent = candidates.length
+        ? "Выбери, кому из водителей принадлежит этот аккаунт. Если его ещё нет в списке, выбери «Новый водитель»."
+        : "Карточек без доступа нет — выбери «Новый водитель».";
+      okBtn.textContent = "Подтвердить";
+    } else if (!d.hourlyRate && !d.shiftRate) {
+      hint.textContent = "У этого водителя не заданы ставки, а без них смену не внести. Откроется его карточка: задай ставку и нажми «Сохранить».";
+      okBtn.textContent = "Открыть карточку";
+    } else {
+      hint.textContent = `Ставки: ${nskRatesText(d)}. Смены в приложении он будет вносить под именем «${d.fullName}».`;
+      okBtn.textContent = "Подтвердить";
+    }
+  }
+  select.onchange = update;
+  update();
+
+  card.querySelector("#na-cancel").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  okBtn.onclick = async () => {
+    const d = chosen();
+    if (select.value === "__new__") {
+      overlay.remove();
+      openDriverForm(null, { fullName: request.name || "", phone: request.phone || "", linkUid: request.id });
+      return;
+    }
+    if (!d) {
+      errBox.textContent = "Выбери карточку водителя или «Новый водитель».";
+      errBox.classList.remove("hidden");
+      return;
+    }
+    if (!d.hourlyRate && !d.shiftRate) {
+      overlay.remove();
+      openDriverForm(d, { linkUid: request.id });
+      return;
+    }
+    okBtn.disabled = true; okBtn.textContent = "Подтверждаю…";
+    try {
+      await nskLinkExistingCard(d, request);
+      overlay.remove();
+    } catch (e) {
+      okBtn.disabled = false;
+      update();
+      errBox.textContent = "Не получилось: " + e.message;
+      errBox.classList.remove("hidden");
+    }
+  };
 }
 
 function renderDrivers() {
@@ -178,12 +315,16 @@ function renderDrivers() {
   app.appendChild(wrap);
 }
 
-function openDriverForm(existing) {
+// preset — когда форму открыли из заявки на доступ в «Смену»:
+// { fullName, phone, linkUid } — ФИО и телефон из заявки (для новой
+// карточки) и аккаунт, который нужно сразу выбрать в поле доступа.
+function openDriverForm(existing, preset) {
+  preset = preset || {};
   driverLicenseFiles = [];
   driverExistingPhotos = existing ? driverPhotos(existing).slice() : [];
   const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
   const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto");
-  const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : "";
+  const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : (!existing && preset[k]) ? escapeHtml(preset[k]) : "";
 
   // кого можно привязать: тех, кто ждёт доступа, и уже привязанный к этой карточке аккаунт
   const oldUid = existing ? (existing.linkedUid || null) : null;
@@ -192,9 +333,13 @@ function openDriverForm(existing) {
   nskWaitingRequests().forEach((r) => {
     if (r.id !== oldUid) linkOptions.push({ uid: r.id, label: `${r.name || "без имени"} · ${r.email || ""}` });
   });
+  // аккаунт из заявки выбираем сразу, если заявка ещё ждёт
+  const presetRequest = preset.linkUid ? linkOptions.find((o) => o.uid === preset.linkUid) : null;
+  const selectedUid = presetRequest ? preset.linkUid : oldUid;
 
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">${existing ? "Изменить водителя" : "Добавить водителя"}</div>
+    ${presetRequest ? `<div class="text-xs text-slate-600 bg-route/10 border border-route/40 rounded-lg px-3 py-2">Подтверждаешь доступ в «Смену» для аккаунта <b>${escapeHtml(presetRequest.label)}</b>. Проверь ФИО, задай ставки и нажми «Сохранить».</div>` : ""}
     <label class="block text-xs text-slate-500">ФИО
       <input id="df-name" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Иванов Иван Иванович" value="${f("fullName")}" />
     </label>
@@ -230,12 +375,12 @@ function openDriverForm(existing) {
     <label class="block text-xs text-slate-500">Аккаунт водителя
       <select id="df-link" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" ${nskRulesMissing ? "disabled" : ""}>
         <option value="">Нет доступа</option>
-        ${linkOptions.map((o) => `<option value="${o.uid}" ${o.uid === oldUid ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}
+        ${linkOptions.map((o) => `<option value="${o.uid}" ${o.uid === selectedUid ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}
       </select>
     </label>
     <div class="text-[11px] text-slate-400">${nskRulesMissing
       ? "Недоступно: в Firebase ещё не опубликован блок правил для «Смены»."
-      : "Водитель сначала сам регистрируется в «Смене» — после этого его аккаунт появится в этом списке. Смены он вносит по ставкам из этой карточки; реквизиты ему не видны."}</div>
+      : "Водитель сначала сам регистрируется в «Смене» — после этого его заявка появится вверху вкладки с кнопкой «Подтвердить», а аккаунт — в этом списке. Смены он вносит по ставкам из этой карточки; реквизиты ему не видны."}</div>
     <div id="df-error" class="text-xs text-brick hidden"></div>
     <div class="flex gap-2 pt-1">
       <button id="df-save" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Сохранить</button>
