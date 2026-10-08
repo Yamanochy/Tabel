@@ -3,6 +3,11 @@
 // Ставка берётся из карточки водителя НА МОМЕНТ сохранения записи и
 // "замораживается" в самой смене — если ставку водителю потом
 // поднимут/снизят, уже сохранённые смены не пересчитаются задним числом.
+//
+// Смены из приложения «Смена» (водитель внёс сам) приходят сюда же, в
+// tabelShifts, и отличаются меткой source: "driver-app". Правка такой
+// смены руководителем ставит на ней managerEdited — после этого
+// водитель её изменить уже не может.
 // ============================================================
 
 let shiftsCache = [];
@@ -46,6 +51,19 @@ function uploadToCloudinary(blob) {
   return fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: "POST", body: form })
     .then((r) => { if (!r.ok) throw new Error("Не удалось загрузить фото"); return r.json(); })
     .then((data) => data.secure_url);
+}
+
+// Пометка под сменой: кто её внёс. Если водитель внёс смену не в тот же
+// день, показываем дату внесения — так видно записи «задним числом».
+function shiftSourceTag(s) {
+  if (s.source !== "driver-app") return "";
+  let when = "";
+  if (s.createdAt && s.createdAt.toDate) {
+    const c = s.createdAt.toDate();
+    const cIso = c.getFullYear() + "-" + String(c.getMonth() + 1).padStart(2, "0") + "-" + String(c.getDate()).padStart(2, "0");
+    if (cIso !== s.date) when = " " + fmtRU(c).slice(0, 5);
+  }
+  return `<div class="text-[11px] text-shift">внёс сам${when}${s.managerEdited ? " · поправлено" : ""}</div>`;
 }
 
 function computeShiftPay(payType, rate, hours) {
@@ -92,7 +110,8 @@ function renderShifts() {
       info.innerHTML = `
         <div class="font-bold text-slate-800">${escapeHtml(s.driverName)}</div>
         <div class="text-xs text-slate-500">${escapeHtml(s.equipmentName || "—")} · ${fmtRU(new Date(s.date + "T00:00:00"))}</div>
-        <div class="text-xs text-slate-400">${s.payType === "hourly" ? (s.hours + " ч × " + fmtMoney(s.rate)) : ("посменно · " + fmtMoney(s.rate))}</div>`;
+        <div class="text-xs text-slate-400">${s.payType === "hourly" ? (s.hours + " ч × " + fmtMoney(s.rate)) : ("посменно · " + fmtMoney(s.rate))}</div>
+        ${shiftSourceTag(s)}`;
       info.onclick = () => { shiftFormOpen = true; shiftEditingId = s.id; shiftSelectedFiles = []; render(); };
       row.appendChild(info);
       const right = el("div", "text-right shrink-0 flex flex-col items-end gap-1");
@@ -298,12 +317,23 @@ function renderShiftForm(existing) {
 
     const payload = {
       date, driverId, driverName: driver.fullName,
+      // аккаунт водителя в приложении «Смена»: по этому полю он видит свои
+      // смены у себя в телефоне (null — доступа в приложение у него нет)
+      driverUid: driver.linkedUid || null,
       equipmentId: equipmentId || null, equipmentName: equipment ? equipment.name : "",
       payType: chosenPayType, rate,
       hours: chosenPayType === "hourly" ? hours : null,
       computedPay: computeShiftPay(chosenPayType, rate, hours),
       note: card.querySelector("#sf-note").value.trim(),
-      createdByUid: currentUser.uid, createdByName: currentProfileName,
+    };
+    // Автор записывается только при создании. Раньше он перезаписывался и при
+    // правке — тогда смена, которую водитель внёс сам, после исправления
+    // руководителем становилась «сменой руководителя».
+    const createdBy = { createdByUid: currentUser.uid, createdByName: currentProfileName };
+    const editedBy = {
+      managerEdited: true, // с этой меткой водитель больше не может править смену
+      editedByUid: currentUser.uid, editedByName: currentProfileName,
+      editedAt: firebase.firestore.FieldValue.serverTimestamp(),
     };
 
     let resizedBlobs = [];
@@ -328,9 +358,9 @@ function renderShiftForm(existing) {
       }
       if (existing) {
         const photoUrls = [...shiftExistingPhotos, ...newUrls];
-        await db.collection("tabelShifts").doc(existing.id).update({ ...payload, photoUrls });
+        await db.collection("tabelShifts").doc(existing.id).update({ ...payload, ...editedBy, photoUrls });
       } else {
-        await db.collection("tabelShifts").add({ ...payload, photoUrls: newUrls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        await db.collection("tabelShifts").add({ ...payload, ...createdBy, photoUrls: newUrls, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
       }
       shiftFormOpen = false; shiftEditingId = null; shiftSelectedFiles = [];
       render();
@@ -342,7 +372,7 @@ function renderShiftForm(existing) {
         return;
       }
       try {
-        await queueAdd("shift", payload, resizedBlobs);
+        await queueAdd("shift", { ...payload, ...createdBy }, resizedBlobs);
         await refreshPendingQueueCache();
         shiftFormOpen = false; shiftEditingId = null; shiftSelectedFiles = [];
         render();

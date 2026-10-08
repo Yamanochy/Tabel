@@ -2,6 +2,16 @@
 // ВОДИТЕЛИ — личные и банковские данные + ставки оплаты (у каждого
 // водителя своя почасовая и посменная ставка — техника тут ни при чём).
 // Отдельная, изолированная коллекция.
+//
+// Здесь же выдаётся доступ в приложение «Смена» (водители техники
+// сами вносят смены со своего телефона):
+//   nskUsers  — заявки: кто зарегистрировался в «Смене» и ждёт доступа
+//   nskAccess — выданный доступ. Документ лежит под uid аккаунта
+//               водителя и хранит КОПИЮ ФИО и ставок из карточки.
+// Зачем копия: сама карточка (tabelDrivers) водителю закрыта — в ней
+// банковские реквизиты. Из копии «Смена» берёт ставку, а правила базы
+// сверяют с ней каждую внесённую смену. Копия обновляется сама при
+// каждом сохранении карточки — руками её править не нужно.
 // ============================================================
 
 let driversCache = [];
@@ -9,6 +19,11 @@ let driversUnsub = null;
 let driverLicenseFiles = []; // новые фото, ещё не загруженные
 let driverExistingPhotos = []; // уже загруженные фото при редактировании (можно удалять)
 const DRIVER_PHOTO_LIMIT = 5;
+
+let nskRequestsCache = [];   // заявки из «Смены»
+let nskAccessCache = [];     // выданные доступы
+let nskUnsubRequests = null, nskUnsubAccess = null;
+let nskRulesMissing = false; // правила Firestore для «Смены» ещё не опубликованы
 
 function subscribeDrivers() {
   if (driversUnsub) return;
@@ -19,6 +34,17 @@ function subscribeDrivers() {
       if (currentTab === "shifts" && !shiftFormOpen) render();
       if (currentTab === "summary") render();
     }, (err) => console.error(err));
+
+  // если блок правил для «Смены» ещё не добавлен, эти две подписки вернут
+  // отказ — Табель при этом продолжает работать как раньше
+  nskUnsubRequests = db.collection("nskUsers").onSnapshot((snap) => {
+    nskRequestsCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (currentTab === "drivers") render();
+  }, () => { nskRulesMissing = true; if (currentTab === "drivers") render(); });
+  nskUnsubAccess = db.collection("nskAccess").onSnapshot((snap) => {
+    nskAccessCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (currentTab === "drivers") render();
+  }, () => { nskRulesMissing = true; if (currentTab === "drivers") render(); });
 }
 
 // на случай старых записей, где было одно фото в licensePhotoUrl —
@@ -29,9 +55,87 @@ function driverPhotos(d) {
   return [];
 }
 
+// ---------- доступ в приложение «Смена» ----------
+
+// зарегистрировались, но ещё не привязаны ни к одной карточке
+function nskWaitingRequests() {
+  const linked = new Set(nskAccessCache.map((a) => a.id));
+  return nskRequestsCache.filter((r) => !linked.has(r.id));
+}
+
+// то, что увидит приложение «Смена»: только ФИО и ставки, без реквизитов
+function nskAccessDoc(driverId, payload) {
+  return {
+    driverId,
+    fullName: payload.fullName,
+    hourlyRate: payload.hourlyRate,
+    shiftRate: payload.shiftRate,
+    email: payload.linkedEmail || "",
+    active: true,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+// Водитель видит в «Смене» только записи с его uid в поле driverUid.
+// При привязке помечаем этим uid все его прежние смены и авансы
+// (при отвязке — снимаем пометку). Человека находим так же, как во
+// вкладке «Итого»: по карточке или по фамилии+имени.
+async function nskRetagDriverRecords(driverId, fullName, newUid) {
+  const key = nameKey(fullName);
+  const ops = [];
+  (typeof shiftsCache !== "undefined" ? shiftsCache : []).forEach((s) => {
+    const mine = s.driverId === driverId || nameKey(s.driverName) === key;
+    if (mine && (s.driverUid || null) !== newUid) ops.push(db.collection("tabelShifts").doc(s.id));
+  });
+  (typeof advancesCache !== "undefined" ? advancesCache : []).forEach((a) => {
+    const mine = a.driverId === driverId || nameKey(a.driverName) === key;
+    if (mine && (a.driverUid || null) !== newUid) ops.push(db.collection("tabelAdvances").doc(a.id));
+  });
+  // одной пачкой база принимает не больше 500 изменений
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = db.batch();
+    ops.slice(i, i + 400).forEach((ref) => batch.update(ref, { driverUid: newUid }));
+    await batch.commit();
+  }
+}
+
+function renderNskRequestsBanner(wrap) {
+  if (nskRulesMissing) {
+    wrap.appendChild(el("div", "bg-white rounded-xl border border-slate-200 p-3 text-xs text-slate-500",
+      "Доступ в приложение «Смена» пока не настроен: в Firebase не опубликован блок правил для него (шаг 1 в USTANOVKA.md). На остальную работу Табеля это не влияет."));
+    return;
+  }
+  const waiting = nskWaitingRequests();
+  if (!waiting.length) return;
+  const box = el("div", "rounded-xl border border-route bg-route/10 p-3");
+  box.appendChild(el("div", "text-sm font-semibold text-diesel",
+    `Ждут доступа в «Смену»: ${waiting.length}`));
+  box.appendChild(el("div", "text-xs text-slate-500 mt-1",
+    "Открой карточку водителя («Изменить данные») и выбери его аккаунт в поле «Доступ в приложение „Смена“». Нет карточки — сначала добавь водителя."));
+  waiting.forEach((r) => {
+    const row = el("div", "flex items-center gap-2 mt-2 bg-white rounded-lg px-3 py-2");
+    row.innerHTML = `
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-semibold text-slate-800 truncate">${escapeHtml(r.name || "без имени")}</div>
+        <div class="text-xs text-slate-400 truncate">${escapeHtml(r.email || "")}${r.phone ? " · " + escapeHtml(r.phone) : ""}</div>
+      </div>`;
+    const reject = el("button", "shrink-0 text-xs text-brick font-semibold px-2 py-1", "Отклонить");
+    reject.onclick = async () => {
+      if (!confirm(`Отклонить заявку «${r.name || r.email}»? Человек сможет подать её заново.`)) return;
+      try { await db.collection("nskUsers").doc(r.id).delete(); }
+      catch (e) { alert("Не получилось: " + e.message); }
+    };
+    row.appendChild(reject);
+    box.appendChild(row);
+  });
+  wrap.appendChild(box);
+}
+
 function renderDrivers() {
   app.innerHTML = "";
   const wrap = el("div", "space-y-3");
+
+  renderNskRequestsBanner(wrap);
 
   const addBtn = el("button", "w-full py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm flex items-center justify-center", `${ICONS.plus}<span class="ml-1">Добавить водителя</span>`);
   addBtn.onclick = () => openDriverForm();
@@ -61,6 +165,7 @@ function renderDrivers() {
           ${d.licenseNumber ? `<div>Удостоверение: ${escapeHtml(d.licenseNumber)}</div>` : ""}
           ${d.bankName ? `<div>${escapeHtml(d.bankName)}${d.bankAccount ? " · " + escapeHtml(d.bankAccount) : ""}</div>` : ""}
           <div class="font-num">${d.hourlyRate ? "Почасовая: " + fmtMoney(d.hourlyRate) + "/ч" : ""}${d.hourlyRate && d.shiftRate ? " · " : ""}${d.shiftRate ? "Посменная: " + fmtMoney(d.shiftRate) : ""}${!d.hourlyRate && !d.shiftRate ? "Ставки не указаны" : ""}</div>
+          ${d.linkedUid ? `<div class="text-shift">Вносит смены сам: ${escapeHtml(d.linkedEmail || "аккаунт привязан")}</div>` : ""}
         </div>`;
       const editBtn = el("button", "text-xs text-slate-500 bg-slate-100 px-2.5 py-1.5 rounded-lg font-medium mt-2 ml-12", "Изменить данные");
       editBtn.onclick = () => openDriverForm(d);
@@ -79,6 +184,15 @@ function openDriverForm(existing) {
   const overlay = el("div", "fixed inset-0 bg-black/40 z-30 flex items-end justify-center");
   const card = el("div", "bg-white rounded-t-2xl w-full max-w-md p-5 space-y-3 max-h-[90vh] overflow-y-auto");
   const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : "";
+
+  // кого можно привязать: тех, кто ждёт доступа, и уже привязанный к этой карточке аккаунт
+  const oldUid = existing ? (existing.linkedUid || null) : null;
+  const linkOptions = [];
+  if (oldUid) linkOptions.push({ uid: oldUid, label: `${existing.linkedEmail || "привязанный аккаунт"} — привязан сейчас` });
+  nskWaitingRequests().forEach((r) => {
+    if (r.id !== oldUid) linkOptions.push({ uid: r.id, label: `${r.name || "без имени"} · ${r.email || ""}` });
+  });
+
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">${existing ? "Изменить водителя" : "Добавить водителя"}</div>
     <label class="block text-xs text-slate-500">ФИО
@@ -112,6 +226,16 @@ function openDriverForm(existing) {
     <label class="block text-xs text-slate-500">Номер счёта / карты
       <input id="df-account" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-num" value="${f("bankAccount")}" />
     </label>
+    <div class="text-xs text-slate-400 font-semibold pt-1">Доступ в приложение «Смена»</div>
+    <label class="block text-xs text-slate-500">Аккаунт водителя
+      <select id="df-link" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" ${nskRulesMissing ? "disabled" : ""}>
+        <option value="">Нет доступа</option>
+        ${linkOptions.map((o) => `<option value="${o.uid}" ${o.uid === oldUid ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}
+      </select>
+    </label>
+    <div class="text-[11px] text-slate-400">${nskRulesMissing
+      ? "Недоступно: в Firebase ещё не опубликован блок правил для «Смены»."
+      : "Водитель сначала сам регистрируется в «Смене» — после этого его аккаунт появится в этом списке. Смены он вносит по ставкам из этой карточки; реквизиты ему не видны."}</div>
     <div id="df-error" class="text-xs text-brick hidden"></div>
     <div class="flex gap-2 pt-1">
       <button id="df-save" class="flex-1 py-2.5 rounded-lg bg-diesel text-white font-semibold text-sm">Сохранить</button>
@@ -167,11 +291,11 @@ function openDriverForm(existing) {
   card.querySelector("#df-save").onclick = async () => {
     const fullName = card.querySelector("#df-name").value.trim();
     const errBox = card.querySelector("#df-error");
-    if (!fullName) {
-      errBox.textContent = "Заполни хотя бы ФИО.";
-      errBox.classList.remove("hidden");
-      return;
-    }
+    const fail = (text) => { errBox.textContent = text; errBox.classList.remove("hidden"); };
+    if (!fullName) return fail("Заполни хотя бы ФИО.");
+
+    const newUid = nskRulesMissing ? oldUid : (card.querySelector("#df-link").value || null);
+    const request = newUid ? nskRequestsCache.find((r) => r.id === newUid) : null;
     const payload = {
       fullName,
       phone: card.querySelector("#df-phone").value.trim(),
@@ -181,7 +305,14 @@ function openDriverForm(existing) {
       bankName: card.querySelector("#df-bank").value.trim(),
       bankAccount: card.querySelector("#df-account").value.trim(),
       active: true,
+      // аккаунт водителя в приложении «Смена» (null — доступа нет)
+      linkedUid: newUid,
+      linkedEmail: newUid ? ((request && request.email) || (newUid === oldUid && existing.linkedEmail) || "") : "",
     };
+    if (newUid && !payload.hourlyRate && !payload.shiftRate) {
+      return fail("Задай хотя бы одну ставку: без неё водитель не сможет внести смену в приложении.");
+    }
+
     const btn = card.querySelector("#df-save");
     btn.disabled = true; btn.textContent = "Сохраняю…";
     try {
@@ -193,10 +324,29 @@ function openDriverForm(existing) {
       }
       payload.licensePhotoUrls = [...driverExistingPhotos, ...newUrls];
       btn.textContent = "Сохраняю…";
-      if (existing) {
-        await db.collection("tabelDrivers").doc(existing.id).update(payload);
-      } else {
-        await db.collection("tabelDrivers").add({ ...payload, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+
+      // карточка и доступ пишутся одной пачкой: либо всё, либо ничего —
+      // чтобы ставка в карточке и её копия для «Смены» не разошлись
+      const ref = existing ? db.collection("tabelDrivers").doc(existing.id) : db.collection("tabelDrivers").doc();
+      const batch = db.batch();
+      if (existing) batch.update(ref, payload);
+      else batch.set(ref, { ...payload, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      if (oldUid && oldUid !== newUid) {
+        // доступ сняли или передали другому аккаунту: прежний теряет его сразу,
+        // заявку убираем — если понадобится, человек подаст её заново
+        batch.delete(db.collection("nskAccess").doc(oldUid));
+        batch.delete(db.collection("nskUsers").doc(oldUid));
+      }
+      if (newUid) batch.set(db.collection("nskAccess").doc(newUid), nskAccessDoc(ref.id, payload));
+      await batch.commit();
+
+      // Пометки на сменах и авансах сверяем при каждом сохранении карточки с
+      // доступом (а не только при привязке): если какая-то запись осталась
+      // без пометки, достаточно открыть карточку и нажать «Сохранить».
+      // Лишних записей в базу это не даёт — правятся только расхождения.
+      if (oldUid !== newUid || newUid) {
+        btn.textContent = "Обновляю смены…";
+        await nskRetagDriverRecords(ref.id, fullName, newUid);
       }
       overlay.remove();
     } catch (e) {
@@ -208,9 +358,16 @@ function openDriverForm(existing) {
 
   if (existing) {
     card.querySelector("#df-delete").onclick = async () => {
-      if (!confirm(`Убрать «${existing.fullName}» из списка? Прошлые смены и авансы останутся в истории.`)) return;
-      await db.collection("tabelDrivers").doc(existing.id).update({ active: false });
-      overlay.remove();
+      if (!confirm(`Убрать «${existing.fullName}» из списка? Прошлые смены и авансы останутся в истории.${oldUid ? " Доступ в приложение «Смена» у него отключится." : ""}`)) return;
+      try {
+        const batch = db.batch();
+        batch.update(db.collection("tabelDrivers").doc(existing.id), { active: false });
+        if (oldUid && !nskRulesMissing) batch.update(db.collection("nskAccess").doc(oldUid), { active: false });
+        await batch.commit();
+        overlay.remove();
+      } catch (e) {
+        alert("Не получилось: " + e.message);
+      }
     };
   }
 }

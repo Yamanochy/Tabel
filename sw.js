@@ -2,7 +2,7 @@
 // SERVICE WORKER — офлайн-кэш приложения.
 // ============================================================
 
-const VERSION = "tabel-v3";
+const VERSION = "tabel-v4";
 
 // Свои файлы — без них приложение офлайн не запустится вообще.
 // Если хоть один не скачался, установка ДОЛЖНА провалиться, чтобы
@@ -56,7 +56,10 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))
+      // ВАЖНО: чистим только СВОИ старые кэши (tabel-…). Хранилище кэшей общее
+      // на весь адрес сайта; раньше здесь удалялось «всё, кроме текущего» — и на
+      // телефоне, где стоят ещё Досатуй или «Смена», стирались их офлайн-копии.
+      Promise.all(keys.filter((k) => k.startsWith("tabel-") && k !== VERSION).map((k) => caches.delete(k)))
     )
   );
   self.clients.claim();

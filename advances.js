@@ -150,11 +150,16 @@ function renderAdvanceForm() {
     // если это водитель из карточек Новосибирска — сохраним и ссылку на неё,
     // но привязка к самой карточке необязательна (например, для водителей Досатуй)
     const matchedDriver = driversCache.find((d) => d.fullName.toLowerCase() === driverName.toLowerCase());
+    // если у этого человека есть доступ в приложение «Смена», помечаем аванс
+    // его аккаунтом — тогда он увидит аванс и остаток у себя в телефоне.
+    // Человека ищем так же, как во вкладке «Итого»: по фамилии+имени.
+    const linkedDriver = driversCache.find((d) => d.active !== false && d.linkedUid && nameKey(d.fullName) === nameKey(driverName));
     errBox.classList.add("hidden");
     saveBtn.disabled = true;
 
     const payload = {
       date, driverId: matchedDriver ? matchedDriver.id : null, driverName,
+      driverUid: linkedDriver ? linkedDriver.linkedUid : null,
       amount,
       // за какой месяц этот аванс — берём месяц, открытый в приложении,
       // а не дату перевода (11 сентября можно выдать аванс за август)
