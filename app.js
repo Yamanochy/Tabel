@@ -256,7 +256,12 @@ function statCard(label, value, colorClass) {
 // что и везде), чтобы подтянуть реквизиты для реестра на выплату
 function driverBankInfo(name) {
   const key = nameKey(name);
-  const match = driversCache.find((d) => nameKey(d.fullName) === key);
+  const same = driversCache.filter((d) => nameKey(d.fullName) === key);
+  // На одного человека может быть две карточки (старая убранная и новая).
+  // Реквизиты берём из действующей; если в ней они не заполнены — из той,
+  // где заполнены, чтобы строка реестра не осталась пустой.
+  const hasBank = (d) => !!(d.bankName || d.bankAccount);
+  const match = same.find((d) => d.active !== false && hasBank(d)) || same.find(hasBank) || same[0];
   return { bank: (match && match.bankName) || "", account: (match && match.bankAccount) || "" };
 }
 
