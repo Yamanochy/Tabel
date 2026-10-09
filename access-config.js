@@ -7,3 +7,7 @@ const TABEL_ALLOWED_EMAILS = [
   "letiushev.a.a@gmail.com",
   "mandrow@yandex.ru",
 ];
+
+// Адрес приложения «Смена». Нужен для ссылок «подтверди в Смене»:
+// водителей подрядчиков подтверждают там — карточка в Табеле им не нужна.
+const SMENA_URL = "https://yamanochy.github.io/Smena/";

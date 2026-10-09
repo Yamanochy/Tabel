@@ -12,6 +12,11 @@
 
 let shiftsCache = [];
 let shiftsUnsub = null;
+// заказчики — справочник приложения «Смена» (nskConfig/lists). Пока
+// руководитель ни разу не открыл новую «Смену», документа нет, и поле
+// «Заказчик» в форме просто не показывается.
+let customersCache = [];
+let customersUnsub = null;
 let shiftFormOpen = false;
 let shiftEditingId = null;
 let shiftSelectedFiles = [];
@@ -24,6 +29,21 @@ function subscribeShifts() {
       if (currentTab === "shifts" && !shiftFormOpen) render();
       if (currentTab === "summary") render();
     }, (err) => console.error(err));
+
+  if (!customersUnsub) {
+    customersUnsub = db.collection("nskConfig").doc("lists").onSnapshot((snap) => {
+      const list = snap.exists && Array.isArray(snap.data().customers) ? snap.data().customers : [];
+      customersCache = list.filter((c) => c && c.id).map((c) => ({ id: String(c.id), name: String(c.name || ""), active: c.active !== false }));
+      if (currentTab === "shifts" && !shiftFormOpen) render();
+    }, () => { /* правила для «Смены» ещё старые — работаем без поля «Заказчик» */ });
+  }
+}
+
+// название заказчика: свежее из справочника, а если его там уже нет — то, что записано в смене
+function shiftCustomerName(s) {
+  if (!s.customerId) return s.customerName || "";
+  const c = customersCache.find((x) => x.id === s.customerId);
+  return c ? c.name : (s.customerName || "");
 }
 
 // ---------- сжатие и загрузка фото (тот же приём, что и в Досатуй) ----------
@@ -110,6 +130,7 @@ function renderShifts() {
       info.innerHTML = `
         <div class="font-bold text-slate-800">${escapeHtml(s.driverName)}</div>
         <div class="text-xs text-slate-500">${escapeHtml(s.equipmentName || "—")} · ${fmtRU(new Date(s.date + "T00:00:00"))}</div>
+        ${shiftCustomerName(s) ? `<div class="text-xs text-slate-500">${escapeHtml(shiftCustomerName(s))}</div>` : ""}
         <div class="text-xs text-slate-400">${s.payType === "hourly" ? (s.hours + " ч × " + fmtMoney(s.rate)) : ("посменно · " + fmtMoney(s.rate))}</div>
         ${shiftSourceTag(s)}`;
       info.onclick = () => { shiftFormOpen = true; shiftEditingId = s.id; shiftSelectedFiles = []; render(); };
@@ -142,7 +163,10 @@ function renderShiftForm(existing) {
   const activeDrivers = driversCache.filter((d) =>
     (d.active !== false && (d.hourlyRate || d.shiftRate)) || (existing && d.id === existing.driverId)
   );
-  const activeEquipment = equipmentCache.filter((e) => e.active !== false || (existing && e.id === existing.equipmentId));
+  // техника подрядчиков в списке не нужна — кроме случая, когда смена уже записана на ней
+  const activeEquipment = equipmentCache.filter((e) => (e.active !== false && isOwnEquipment(e)) || (existing && e.id === existing.equipmentId));
+  // заказчик: действующие из справочника плюс тот, что уже стоит в смене
+  const customerOptions = customersCache.filter((c) => c.active || (existing && c.id === existing.customerId));
 
   card.innerHTML = `
     <div class="font-bold font-display text-lg text-diesel">${existing ? "Изменить смену" : "Новая смена"}</div>
@@ -161,6 +185,13 @@ function renderShiftForm(existing) {
         ${activeEquipment.map((e) => `<option value="${e.id}" ${existing && existing.equipmentId === e.id ? "selected" : ""}>${escapeHtml(e.name)}${e.plateNumber ? " — " + escapeHtml(e.plateNumber) : ""}</option>`).join("")}
       </select>
     </label>
+    ${customerOptions.length ? `
+    <label class="block text-xs text-slate-500">Заказчик
+      <select id="sf-customer" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
+        <option value="">Не указан</option>
+        ${customerOptions.map((c) => `<option value="${escapeHtml(c.id)}" ${existing && existing.customerId === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
+      </select>
+    </label>` : ""}
     <div id="sf-paytype-wrap">
       <div class="text-xs text-slate-500 mb-1">Оплата за эту смену</div>
       <div class="flex gap-2" id="sf-paytype-btns">
@@ -326,6 +357,14 @@ function renderShiftForm(existing) {
       computedPay: computeShiftPay(chosenPayType, rate, hours),
       note: card.querySelector("#sf-note").value.trim(),
     };
+    // Заказчика пишем, только если поле было в форме: иначе правка смены
+    // стёрла бы заказчика, которого водитель выбрал в «Смене».
+    const customerSelect = card.querySelector("#sf-customer");
+    if (customerSelect) {
+      const chosen = customerOptions.find((c) => c.id === customerSelect.value);
+      payload.customerId = chosen ? chosen.id : "";
+      payload.customerName = chosen ? chosen.name : "";
+    }
     // Автор записывается только при создании. Раньше он перезаписывался и при
     // правке — тогда смена, которую водитель внёс сам, после исправления
     // руководителем становилась «сменой руководителя».

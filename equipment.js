@@ -1,6 +1,11 @@
 // ============================================================
 // ТЕХНИКА — просто список техники (название + гос. номер).
 // Ставка оплаты теперь у водителя, не у техники — см. drivers.js.
+//
+// Список общий с приложением «Смена». Там у техники есть пометка
+// «чья» (поле ownerId): нет поля или "own" — наша, иначе это техника
+// подрядчика. Чужую технику Табель не показывает: ни здесь, ни в
+// форме смены. Добавляют и правят её в «Смене», вкладка «Справочники».
 // ============================================================
 
 let equipmentCache = [];
@@ -16,6 +21,11 @@ function subscribeEquipment() {
     }, (err) => console.error(err));
 }
 
+// наша техника (у техники подрядчика в ownerId записан его id)
+function isOwnEquipment(e) {
+  return !e.ownerId || e.ownerId === "own";
+}
+
 function renderEquipment() {
   app.innerHTML = "";
   const wrap = el("div", "space-y-3");
@@ -25,7 +35,7 @@ function renderEquipment() {
   wrap.appendChild(addBtn);
 
   const card = el("div", "bg-white rounded-xl border border-slate-200 overflow-hidden");
-  const active = equipmentCache.filter((e) => e.active !== false);
+  const active = equipmentCache.filter((e) => e.active !== false && isOwnEquipment(e));
   if (!active.length) {
     card.appendChild(el("div", "p-5 text-sm text-slate-400 text-center", "Техника пока не добавлена."));
   } else {

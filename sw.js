@@ -2,7 +2,7 @@
 // SERVICE WORKER — офлайн-кэш приложения.
 // ============================================================
 
-const VERSION = "tabel-v6";
+const VERSION = "tabel-v7";
 
 // Свои файлы — без них приложение офлайн не запустится вообще.
 // Если хоть один не скачался, установка ДОЛЖНА провалиться, чтобы
@@ -18,6 +18,7 @@ const CORE_ASSETS = [
   "./advances.js",
   "./dosatuy-ref.js",
   "./offline-queue.js",
+  "./xl-sheet.js",
   "./auth.js",
   "./firebase-config.js",
   "./cloud-config.js",
@@ -35,7 +36,7 @@ const CDN_ASSETS = [
   "https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js",
   "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js",
   "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js",
-  "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+  "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js",
 ];
 
 self.addEventListener("install", (e) => {

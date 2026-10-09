@@ -265,31 +265,64 @@ function driverBankInfo(name) {
   return { bank: (match && match.bankName) || "", account: (match && match.bankAccount) || "" };
 }
 
+// Реестр на выплату и детализация — в том же оформлении, что реестр
+// перевозок в Досатуе (общий файл xl-sheet.js).
 function exportPayrollExcel(combined, names) {
-  const sorted = names.slice().sort((a, b) => a.localeCompare(b));
+  if (typeof XLSX === "undefined" || typeof xlBuildSheet !== "function") {
+    alert("Не удалось загрузить модуль Excel — нужен интернет. Открой Табель при хорошей связи и попробуй ещё раз.");
+    return;
+  }
+  const sorted = names.slice().sort((a, b) => a.localeCompare(b, "ru"));
+  const monthLine = `Расчётный месяц: ${MONTHS_RU[selectedMonth]} ${selectedYear}`;
+  const subtitle = "Табель · Новосибирск и Досатуй";
+  const money = { align: "right", numFmt: "#,##0" };
+  const sum = (pick) => sorted.reduce((s, n) => s + pick(combined[n]), 0);
+  const remainOf = (t) => (t.nsk + t.dosatuy) - t.advanced;
 
-  const registryRows = [["№", "ФИО", "Банк", "Счёт / карта", "Остаток к выплате, ₽"]];
-  sorted.forEach((name, i) => {
-    const t = combined[name];
-    const remain = (t.nsk + t.dosatuy) - t.advanced;
-    const bank = driverBankInfo(name);
-    registryRows.push([i + 1, name, bank.bank, bank.account, remain]);
+  const ws1 = xlBuildSheet({
+    title: "РЕЕСТР НА ВЫПЛАТУ",
+    subtitle,
+    lines: [monthLine],
+    columns: [
+      { title: "№", width: 5, align: "center" },
+      { title: "ФИО", width: 34, wrap: true },
+      { title: "Банк", width: 20, wrap: true },
+      { title: "Счёт / карта", width: 28 },
+      { title: "Остаток к выплате, ₽", width: 20, ...money },
+    ],
+    rows: sorted.map((name, i) => {
+      const bank = driverBankInfo(name);
+      // счёт — всегда текстом: длинный номер Excel иначе превратит в «4,08E+19»
+      return [i + 1, name, bank.bank, String(bank.account || ""), remainOf(combined[name])];
+    }),
+    total: { label: `ИТОГО к выплате: ${sorted.length} чел.`, span: 4, values: { 4: sum(remainOf) } },
   });
-  const totalRemain = sorted.reduce((s, n) => s + ((combined[n].nsk + combined[n].dosatuy) - combined[n].advanced), 0);
-  registryRows.push(["", "ИТОГО", "", "", totalRemain]);
 
-  const detailRows = [["ФИО", "Начислено · Новосибирск, ₽", "Начислено · Досатуй, ₽", "Начислено всего, ₽", "Аванс, ₽", "Остаток, ₽"]];
-  sorted.forEach((name) => {
-    const t = combined[name];
-    const earned = t.nsk + t.dosatuy;
-    detailRows.push([name, t.nsk, t.dosatuy, earned, t.advanced, earned - t.advanced]);
+  const ws2 = xlBuildSheet({
+    title: "ДЕТАЛИЗАЦИЯ НАЧИСЛЕНИЙ",
+    subtitle,
+    lines: [monthLine],
+    columns: [
+      { title: "ФИО", width: 34, wrap: true },
+      { title: "Начислено · Новосибирск, ₽", width: 18, ...money },
+      { title: "Начислено · Досатуй, ₽", width: 18, ...money },
+      { title: "Начислено всего, ₽", width: 18, ...money },
+      { title: "Аванс, ₽", width: 16, ...money },
+      { title: "Остаток, ₽", width: 16, ...money },
+    ],
+    rows: sorted.map((name) => {
+      const t = combined[name];
+      const earned = t.nsk + t.dosatuy;
+      return [name, t.nsk, t.dosatuy, earned, t.advanced, earned - t.advanced];
+    }),
+    total: {
+      label: "ИТОГО", span: 1,
+      values: { 1: sum((t) => t.nsk), 2: sum((t) => t.dosatuy), 3: sum((t) => t.nsk + t.dosatuy), 4: sum((t) => t.advanced), 5: sum(remainOf) },
+    },
   });
 
   const wb = XLSX.utils.book_new();
-  const ws1 = XLSX.utils.aoa_to_sheet(registryRows);
-  XLSX.utils.book_append_sheet(wb, ws1, "Реестр на выплату");
-  const ws2 = XLSX.utils.aoa_to_sheet(detailRows);
-  XLSX.utils.book_append_sheet(wb, ws2, "Детализация");
-
-  XLSX.writeFile(wb, `Табель_${MONTHS_RU[selectedMonth]}_${selectedYear}.xlsx`);
+  xlAppendSheet(wb, ws1, "Реестр на выплату");
+  xlAppendSheet(wb, ws2, "Детализация", { landscape: true });
+  xlSaveFile(wb, `Табель_${MONTHS_RU[selectedMonth]}_${selectedYear}.xlsx`);
 }

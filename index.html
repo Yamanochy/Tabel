@@ -37,7 +37,8 @@
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- xlsx-js-style — та же библиотека, что в Досатуе: умеет оформление (границы, шапка, итоги) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
   body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background: #EEF0F3; }
   .font-num { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
@@ -70,6 +71,7 @@
   <script src="cloud-config.js"></script>
   <script src="access-config.js"></script>
   <script src="offline-queue.js"></script>
+  <script src="xl-sheet.js"></script>
   <script src="app.js"></script>
   <script src="equipment.js"></script>
   <script src="drivers.js"></script>

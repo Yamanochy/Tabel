@@ -22,6 +22,15 @@
 //   • он зарегистрировался заново (новая заявка) — в окне «Подтвердить»
 //     можно выбрать его убранную карточку или карточку, которая уже
 //     привязана к его старому аккаунту (доступ перейдёт на новый).
+//
+// Водители подрядчиков. Зарплату им платит подрядчик, поэтому карточки в
+// Табеле у них нет и в расчёты они не попадают. Доступ им выдаёт
+// руководитель в «Смене» (вкладка «Водители»): в документе доступа тогда
+// стоит kind: "contractor", а путевые ложатся в отдельную коллекцию,
+// которую Табель не читает. Здесь такие аккаунты не показываются; если
+// заявку подал водитель подрядчика, в окне «Подтвердить» есть ссылка
+// «подтверди его в „Смене“». И наоборот: «Смена» умеет открыть Табель
+// сразу на нужной заявке — адресом …/Tabel/#zayavka=<uid аккаунта>.
 // ============================================================
 
 let driversCache = [];
@@ -35,28 +44,73 @@ let nskAccessCache = [];     // выданные доступы
 let nskUnsubRequests = null, nskUnsubAccess = null;
 let nskRulesMissing = false; // правила Firestore для «Смены» ещё не опубликованы
 let nskAccessLoaded = false; // список доступов уже пришёл из базы
+let nskRequestsLoaded = false; // список заявок уже пришёл из базы
+let driversLoaded = false;   // карточки водителей уже пришли из базы
 let removedDriversOpen = false; // раскрыт ли раздел «Убранные из списка»
+
+// ---------- заявка, которую просили открыть по ссылке из «Смены» ----------
+// «Смена» открывает Табель адресом …/Tabel/#zayavka=<uid>: руководитель
+// отметил там «наш водитель», а карточку и ставки задают здесь.
+let nskDeepLinkUid = null;
+let nskDeepLinkSince = 0;
+const NSK_DEEP_LINK_WAIT_MS = 12000;
+
+function nskReadDeepLink() {
+  const m = String(location.hash || "").match(/zayavka=([A-Za-z0-9_-]+)/);
+  if (!m) return;
+  nskDeepLinkUid = m[1];
+  nskDeepLinkSince = Date.now();
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+  // если заявка так и не появится среди ожидающих — скажем об этом, а не будем молчать
+  setTimeout(nskTryDeepLink, NSK_DEEP_LINK_WAIT_MS + 300);
+}
+nskReadDeepLink();
+window.addEventListener("hashchange", () => { nskReadDeepLink(); nskTryDeepLink(); });
+
+function nskTryDeepLink() {
+  if (!nskDeepLinkUid || !currentUser || !driversLoaded || !nskRequestsLoaded || !nskAccessLoaded) return;
+  const request = nskWaitingRequests().find((r) => r.id === nskDeepLinkUid);
+  if (request) {
+    nskDeepLinkUid = null;
+    currentTab = "drivers";
+    render();
+    openNskApproveDialog(request);
+    return;
+  }
+  // Заявка могла ещё «не дойти»: когда водителя подрядчика переводят в наши,
+  // «Смена» снимает его прежний доступ за мгновение до открытия Табеля.
+  if (Date.now() - nskDeepLinkSince < NSK_DEEP_LINK_WAIT_MS) return;
+  nskDeepLinkUid = null;
+  currentTab = "drivers";
+  render();
+  alert("Этой заявки нет среди ожидающих: её уже подтвердили или отклонили. Если водитель должен быть нашим, а доступа у него нет — попроси его подать заявку заново.");
+}
 
 function subscribeDrivers() {
   if (driversUnsub) return;
   driversUnsub = db.collection("tabelDrivers").orderBy("fullName")
     .onSnapshot((snap) => {
       driversCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      driversLoaded = true;
       if (currentTab === "drivers") render();
       if (currentTab === "shifts" && !shiftFormOpen) render();
       if (currentTab === "summary") render();
+      nskTryDeepLink();
     }, (err) => console.error(err));
 
   // если блок правил для «Смены» ещё не добавлен, эти две подписки вернут
   // отказ — Табель при этом продолжает работать как раньше
   nskUnsubRequests = db.collection("nskUsers").onSnapshot((snap) => {
     nskRequestsCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    nskRequestsLoaded = true;
     if (currentTab === "drivers") render();
+    nskTryDeepLink();
   }, () => { nskRulesMissing = true; if (currentTab === "drivers") render(); });
   nskUnsubAccess = db.collection("nskAccess").onSnapshot((snap) => {
     nskAccessCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     nskAccessLoaded = true;
     if (currentTab === "drivers") render();
+    nskTryDeepLink();
   }, () => { nskRulesMissing = true; if (currentTab === "drivers") render(); });
 }
 
@@ -91,10 +145,16 @@ function nskAccessDoc(driverId, payload) {
   };
 }
 
-// доступ этого аккаунта включён прямо сейчас
+// аккаунт сейчас числится за водителем подрядчика (пометку ставят в «Смене»)
+function nskIsContractorAccount(uid) {
+  const acc = nskAccessCache.find((a) => a.id === uid);
+  return !!acc && acc.kind === "contractor";
+}
+
+// доступ этого аккаунта как НАШЕГО водителя включён прямо сейчас
 function nskAccessIsOn(uid) {
   const acc = nskAccessCache.find((a) => a.id === uid);
-  return !!acc && acc.active === true;
+  return !!acc && acc.active === true && acc.kind !== "contractor";
 }
 
 // Прежний аккаунт карточки можно лишать доступа, только если этот доступ
@@ -103,6 +163,8 @@ function nskAccessIsOn(uid) {
 // можно было бы молча отключить работающего водителя.
 function nskOldAccountIsOurs(card, oldUid) {
   const acc = nskAccessCache.find((a) => a.id === oldUid);
+  // аккаунт уже отдан водителю подрядчика — это больше не доступ карточки
+  if (acc && acc.kind === "contractor") return false;
   if (acc && acc.driverId && acc.driverId !== card.id) return false;
   return !driversCache.some((x) => x.id !== card.id && x.active !== false && x.linkedUid === oldUid);
 }
@@ -156,7 +218,7 @@ function renderNskRequestsBanner(wrap) {
   box.appendChild(el("div", "text-sm font-semibold text-diesel",
     `Ждут доступа в «Смену»: ${waiting.length}`));
   box.appendChild(el("div", "text-xs text-slate-500 mt-1",
-    "Нажми «Подтвердить» и укажи, чья это карточка. Если водителя ещё нет в списке, карточку создашь там же."));
+    "Нажми «Подтвердить» и укажи, чья это карточка. Если водителя ещё нет в списке, карточку создашь там же. Водителя подрядчика подтверждай в «Смене»: карточка в Табеле ему не нужна."));
   waiting.forEach((r) => {
     // имя и почта — отдельной строкой над кнопками: на телефоне их нужно
     // видеть целиком, иначе не понять, чья это заявка
@@ -246,14 +308,17 @@ function openNskApproveDialog(request) {
   //   removed — убран из списка: вернётся в список и получит доступ;
   //   taken   — уже работает с другого аккаунта: доступ перейдёт на этот.
   // (карточка, где записан этот же аккаунт, но доступа почему-то нет, — тоже «без доступа»)
-  const free = driversCache.filter((d) => d.active !== false && (!d.linkedUid || d.linkedUid === request.id));
+  // (карточка, которая «помнит» аккаунт, уже отданный водителю подрядчика, тоже «без доступа»:
+  //  тот аккаунт ей больше не принадлежит, и при привязке его никто не тронет)
+  const linkIsLive = (d) => !!d.linkedUid && !nskIsContractorAccount(d.linkedUid);
+  const free = driversCache.filter((d) => d.active !== false && (!linkIsLive(d) || d.linkedUid === request.id));
   // Убранную карточку не предлагаем, если на того же человека уже есть
   // действующая: привязка к старой переписала бы на неё пометки его смен
   // и подменила бы реквизиты в реестре на выплату.
   const removed = driversCache.filter((d) => d.active === false && !nskActiveTwin(d));
-  const taken = driversCache.filter((d) => d.active !== false && d.linkedUid && d.linkedUid !== request.id);
+  const taken = driversCache.filter((d) => d.active !== false && linkIsLive(d) && d.linkedUid !== request.id);
   const everyone = free.concat(removed, taken);
-  const kindOf = (d) => (d.active === false ? "removed" : (d.linkedUid && d.linkedUid !== request.id) ? "taken" : "free");
+  const kindOf = (d) => (d.active === false ? "removed" : (linkIsLive(d) && d.linkedUid !== request.id) ? "taken" : "free");
   const safeMatches = free.concat(removed).filter((d) => nskCardMatchesRequest(d, request));
   const takenMatches = taken.filter((d) => nskCardMatchesRequest(d, request));
   // Подставляем карточку сами, только если совпадение ровно одно и нет
@@ -280,6 +345,8 @@ function openNskApproveDialog(request) {
       <div class="text-sm font-semibold text-slate-800 break-words">${escapeHtml(request.name || "без имени")}</div>
       <div class="text-xs text-slate-500 break-all">${escapeHtml(request.email || "")}${request.phone ? " · " + escapeHtml(request.phone) : ""}</div>
     </div>
+    <div class="text-xs text-slate-500">Это водитель подрядчика? Карточка в Табеле ему не нужна —
+      <a id="na-contractor" href="${SMENA_URL}#zayavka=${encodeURIComponent(request.id)}" target="_blank" rel="noopener" class="font-semibold text-diesel underline">подтверди его в «Смене»</a>.</div>
     <label class="block text-xs text-slate-500">Чья это карточка
       <select id="na-driver" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white">
         <option value="">Выбери водителя</option>
@@ -360,6 +427,8 @@ function openNskApproveDialog(request) {
   update();
 
   card.querySelector("#na-cancel").onclick = () => overlay.remove();
+  // ушли подтверждать в «Смену» — это окно больше не нужно
+  card.querySelector("#na-contractor").onclick = () => { setTimeout(() => overlay.remove(), 0); };
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
   okBtn.onclick = async () => {
@@ -416,6 +485,13 @@ async function nskRestoreDriver(d, btn) {
     alert(`В списке уже есть «${twin.fullName}». Вторая карточка на того же человека не нужна: его смены в «Смене» и реквизиты в реестре начали бы браться не из той карточки. Если нужно что-то поправить — поправь в действующей.`);
     return;
   }
+  // Чей сейчас аккаунт карточки, видно только из списка доступов. Пока он не
+  // загрузился, доступ не возвращаем: аккаунт за это время могли отдать
+  // другой карточке или отметить в «Смене» как водителя подрядчика.
+  if (d.linkedUid && !nskRulesMissing && !nskAccessLoaded) {
+    alert("Список доступов «Смены» ещё загружается. Подожди пару секунд и нажми «Вернуть» ещё раз.");
+    return;
+  }
   // пока водителя не было, его аккаунт могли привязать к другой карточке
   const ours = !d.linkedUid || nskOldAccountIsOurs(d, d.linkedUid);
   const holder = d.linkedUid ? driversCache.find((x) => x.id !== d.id && x.active !== false && x.linkedUid === d.linkedUid) : null;
@@ -426,6 +502,7 @@ async function nskRestoreDriver(d, btn) {
   let text = `Вернуть «${d.fullName}» в список?`;
   if (giveAccess) text += ` Доступ в приложение «Смена» для аккаунта ${d.linkedEmail || "водителя"} включится снова.`;
   else if (linked && !hasRate) text += " У него привязан аккаунт «Смены», но не задана ставка: откроется карточка — задай ставку и нажми «Сохранить», иначе доступ не включится.";
+  else if (d.linkedUid && nskIsContractorAccount(d.linkedUid)) text += " Его аккаунт в «Смене» сейчас отмечен как водитель подрядчика, поэтому эта карточка вернётся без доступа. Чтобы он снова вносил смены как наш, поменяй пометку в «Смене», вкладка «Водители».";
   else if (d.linkedUid && !ours) text += ` Его аккаунт в «Смене» сейчас привязан к другой карточке${holder ? " — «" + holder.fullName + "»" : ""}, поэтому эта карточка вернётся без доступа.`;
   if (!confirm(text)) return;
 
@@ -498,6 +575,9 @@ function nskLinkLine(d) {
   if (!nskAccessLoaded || nskRulesMissing || nskAccessIsOn(d.linkedUid)) {
     return `<div class="text-shift break-words">Вносит смены сам: ${email}</div>`;
   }
+  if (nskIsContractorAccount(d.linkedUid)) {
+    return `<div class="text-brick break-words">Аккаунт ${email} в «Смене» отмечен как водитель подрядчика: его смены в Табель не идут. Если это ошибка — поправь пометку в «Смене», вкладка «Водители».</div>`;
+  }
   return `<div class="text-brick break-words">Аккаунт ${email} привязан, но доступ выключен. Чтобы включить, нажми «Изменить данные» и «Сохранить».</div>`;
 }
 
@@ -564,7 +644,16 @@ function openDriverForm(existing, preset) {
   const f = (k) => (existing && existing[k]) ? escapeHtml(existing[k]) : (!existing && preset[k]) ? escapeHtml(preset[k]) : "";
 
   // кого можно привязать: тех, кто ждёт доступа, и уже привязанный к этой карточке аккаунт
-  const oldUid = existing ? (existing.linkedUid || null) : null;
+  //
+  // Карточка может «помнить» аккаунт, который с тех пор отмечен в «Смене» как
+  // водитель подрядчика. Для этой карточки такого аккаунта больше нет: иначе
+  // простое «Сохранить» (поправили телефон) записало бы поверх его документа
+  // доступа ставку и ФИО из этой карточки — и водитель подрядчика молча стал
+  // бы «нашим», а его смены пошли бы в зарплату. После сохранения карточка
+  // этот аккаунт забывает; сам аккаунт и его путевые не затрагиваются.
+  const rememberedUid = existing ? (existing.linkedUid || null) : null;
+  const goneToContractor = !!rememberedUid && nskIsContractorAccount(rememberedUid);
+  const oldUid = goneToContractor ? null : rememberedUid;
   const linkOptions = [];
   // карточка убрана из списка (сюда попадают из окна «Подтвердить»): сохранение вернёт её в список
   const wasRemoved = !!existing && existing.active === false;
@@ -580,6 +669,7 @@ function openDriverForm(existing, preset) {
     <div class="font-bold font-display text-lg text-diesel">${existing ? "Изменить водителя" : "Добавить водителя"}</div>
     ${presetRequest ? `<div class="text-xs text-slate-600 bg-route/10 border border-route/40 rounded-lg px-3 py-2">Подтверждаешь доступ в «Смену» для аккаунта <b>${escapeHtml(presetRequest.label)}</b>. Проверь ФИО, задай ставки и нажми «Сохранить».</div>` : ""}
     ${wasRemoved ? `<div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">Карточка сейчас убрана из списка. После сохранения она вернётся в список.</div>` : ""}
+    ${goneToContractor ? `<div class="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">Аккаунт ${escapeHtml(existing.linkedEmail || "этого водителя")} теперь отмечен в «Смене» как водитель подрядчика, поэтому доступа у этой карточки нет. Если он снова должен вносить смены как наш — поменяй пометку в «Смене», вкладка «Водители».</div>` : ""}
     <label class="block text-xs text-slate-500">ФИО
       <input id="df-name" class="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Иванов Иван Иванович" value="${f("fullName")}" />
     </label>
@@ -696,6 +786,13 @@ function openDriverForm(existing, preset) {
     };
     if (newUid && !payload.hourlyRate && !payload.shiftRate) {
       return fail("Задай хотя бы одну ставку: без неё водитель не сможет внести смену в приложении.");
+    }
+    // Документ доступа пишется поверх прежнего, поэтому сначала убеждаемся, что
+    // этот аккаунт не числится водителем подрядчика. Пометку могли поставить в
+    // «Смене», пока это окно было открыто, а список доступов мог ещё не загрузиться.
+    if (newUid && !nskRulesMissing) {
+      if (!nskAccessLoaded) return fail("Список доступов «Смены» ещё загружается. Подожди пару секунд и нажми «Сохранить» ещё раз.");
+      if (nskIsContractorAccount(newUid)) return fail("Этот аккаунт сейчас отмечен в «Смене» как водитель подрядчика, выдать ему доступ из Табеля нельзя. Закрой окно и открой карточку заново.");
     }
 
     const btn = card.querySelector("#df-save");
